@@ -167,6 +167,18 @@ function require(name)
 end
 
 
+-- Add PoB runtime lua path for external luajit runs
+do
+  local candidates = { "../runtime/lua", "runtime/lua", "../../runtime/lua" }
+  for _, p in ipairs(candidates) do
+    local f = io.open(p .. "/xml.lua", "r")
+    if f then f:close()
+      if not string.find(package.path, p .. "/?.lua", 1, true) then
+        package.path = package.path .. ";" .. p .. "/?.lua"
+      end
+    end
+  end
+end
 dofile("Launch.lua")
 
 -- Prevents loading of ModCache
@@ -203,4 +215,11 @@ function loadBuildFromJSON(getItemsJSON, getPassiveSkillsJSON)
 	build.importTab:ImportPassiveTreeAndJewels(getPassiveSkillsJSON, charData)
 	-- You now have a build without a correct main skill selected, or any configuration options set
 	-- Good luck!
+end
+
+-- API server integration (env-gated)
+-- Set POB_API_STDIO=1 to start the stdio JSON-RPC server and exit
+if os.getenv('POB_API_STDIO') == '1' then
+  dofile('API/Server.lua')
+  return
 end
