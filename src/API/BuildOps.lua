@@ -3,6 +3,12 @@
 
 local M = {}
 
+-- Constants
+local MIN_PLAYER_LEVEL = 1
+local MAX_PLAYER_LEVEL = 100
+local NUM_FLASK_SLOTS = 5
+local MAX_ITEM_TEXT_LENGTH = 10240  -- 10KB
+
 -- Ensure outputs are (re)built and return the main output table safely
 function M.get_main_output()
   if not build or not build.calcsTab then
@@ -113,14 +119,14 @@ function M.export_build_xml()
   return xml
 end
 
--- Set player level [1..100] and rebuild
+-- Set player level and rebuild
 function M.set_level(level)
   if not build or not build.configTab then
     return nil, 'build/config not initialized'
   end
   local lvl = tonumber(level)
-  if not lvl or lvl < 1 or lvl > 100 then
-    return nil, 'invalid level'
+  if not lvl or lvl < MIN_PLAYER_LEVEL or lvl > MAX_PLAYER_LEVEL then
+    return nil, string.format('invalid level (must be %d-%d)', MIN_PLAYER_LEVEL, MAX_PLAYER_LEVEL)
   end
   build.characterLevel = lvl
   build.characterLevelAutoMode = false
@@ -282,7 +288,18 @@ end
 function M.add_item_text(params)
   if not build or not build.itemsTab then return nil, 'items not initialized' end
   if type(params) ~= 'table' or type(params.text) ~= 'string' then return nil, 'missing text' end
-  local item = new('Item', params.text)
+
+  -- Validate input to prevent potential issues
+  if #params.text == 0 then return nil, 'item text cannot be empty' end
+  if #params.text > MAX_ITEM_TEXT_LENGTH then
+    return nil, string.format('item text too long (max %d bytes)', MAX_ITEM_TEXT_LENGTH)
+  end
+
+  -- Use pcall to safely handle item creation
+  local ok, item = pcall(new, 'Item', params.text)
+  if not ok then return nil, 'invalid item text: ' .. tostring(item) end
+  if not item or not item.baseName then return nil, 'failed to parse item' end
+
   item:NormaliseQuality()
   build.itemsTab:AddItem(item, params.noAutoEquip == true)
   if params.slotName then
@@ -303,7 +320,9 @@ function M.set_flask_active(params)
   if type(params) ~= 'table' then return nil, 'invalid params' end
   local idx = tonumber(params.index)
   local active = params.active == true
-  if not idx or idx < 1 or idx > 5 then return nil, 'invalid index' end
+  if not idx or idx < 1 or idx > NUM_FLASK_SLOTS then
+    return nil, string.format('invalid flask index (must be 1-%d)', NUM_FLASK_SLOTS)
+  end
   local slotName = 'Flask ' .. tostring(idx)
   if not build.itemsTab.activeItemSet or not build.itemsTab.activeItemSet[slotName] then return nil, 'slot not found' end
   build.itemsTab.activeItemSet[slotName].active = active
