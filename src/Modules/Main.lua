@@ -273,6 +273,16 @@ the "Releases" section of the GitHub page.]])
 			end
 		end
 	end
+	-- Start embedded TCP API server if requested
+	if os.getenv('POB_API_TCP') == '1' then
+		local ok, err = pcall(dofile, 'API/TcpServer.lua')
+		if not ok then
+			ConPrintf('[API] Failed to load TCP server: %s', tostring(err))
+		else
+			if _G.API_TCP_INIT then _G.API_TCP_INIT() end
+		end
+	end
+
 end
 
 function main:DetectUnicodeSupport()
@@ -479,6 +489,15 @@ function main:OnFrame()
 	itemLib.wiki.triggered = false
 
 	wipeTable(self.inputEvents)
+
+
+	-- Pump TCP API server if enabled
+	if _G.API_TCP_TICK then
+		local ok, err = pcall(_G.API_TCP_TICK)
+		if not ok then
+			ConPrintf('[API] TCP tick error: %s', tostring(err))
+		end
+	end
 
 	-- TODO: this pattern may pose memory management issues for classes that don't exist for the lifetime of the program
 	for _, onFrameFunc in pairs(self.onFrameFuncs) do
