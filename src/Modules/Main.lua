@@ -83,10 +83,10 @@ function main:Init()
 		-- If running in dev mode or standalone mode, put user data in the script path
 		self.userPath = GetScriptPath().."/"
 	else
-		local invalidPath
-		self.userPath, invalidPath = GetUserPath()
+		local invalidPath, errMsg
+		self.userPath, invalidPath, errMsg = GetUserPath()
 		if not self.userPath then
-			self:OpenPathPopup(invalidPath, ignoreBuild)
+			self:OpenPathPopup(invalidPath, errMsg, ignoreBuild)
 		else
 			self.userPath = self.userPath.."/Path of Building/"
 		end
@@ -111,6 +111,7 @@ function main:Init()
 	self.notSupportedTooltipText = " ^8(Not supported in PoB yet)"
 	self.POESESSID = ""
 	self.showPublicBuilds = true
+	self.showFlavourText = true
 
 	if self.userPath then
 		self:ChangeUserPath(self.userPath, ignoreBuild)
@@ -616,8 +617,8 @@ function main:LoadSettings(ignoreBuild)
 				if node.attrib.defaultItemAffixQuality then
 					self.defaultItemAffixQuality = m_min(tonumber(node.attrib.defaultItemAffixQuality) or 0.5, 1)
 				end
-				if node.attrib.lastExportWebsite then
-					self.lastExportWebsite = node.attrib.lastExportWebsite
+				if node.attrib.lastExportedWebsite then
+					self.lastExportedWebsite = node.attrib.lastExportedWebsite
 				end
 				if node.attrib.showWarnings then
 					self.showWarnings = node.attrib.showWarnings == "true"
@@ -640,9 +641,12 @@ function main:LoadSettings(ignoreBuild)
 				if node.attrib.showPublicBuilds then
 					self.showPublicBuilds = node.attrib.showPublicBuilds == "true"
 				end
+				if node.attrib.showFlavourText then
+					self.showFlavourText = node.attrib.showFlavourText == "true"
+				end
 				if node.attrib.dpiScaleOverridePercent then
 					self.dpiScaleOverridePercent = tonumber(node.attrib.dpiScaleOverridePercent) or 0
-					SetDPIScaleOverridePercent(self.dpiScaleOverridePercent)
+					if SetDPIScaleOverridePercent then SetDPIScaleOverridePercent(self.dpiScaleOverridePercent) end
 				end
 			end
 		end
@@ -753,7 +757,7 @@ function main:SaveSettings()
 		defaultGemQuality = tostring(self.defaultGemQuality or 0),
 		defaultCharLevel = tostring(self.defaultCharLevel or 1),
 		defaultItemAffixQuality = tostring(self.defaultItemAffixQuality or 0.5),
-		lastExportWebsite = self.lastExportWebsite,
+		lastExportedWebsite = self.lastExportedWebsite,
 		showWarnings = tostring(self.showWarnings),
 		slotOnlyTooltips = tostring(self.slotOnlyTooltips),
 		notSupportedModTooltips = tostring(self.notSupportedModTooltips),
@@ -761,6 +765,7 @@ function main:SaveSettings()
 		invertSliderScrollDirection = tostring(self.invertSliderScrollDirection),
 		disableDevAutoSave = tostring(self.disableDevAutoSave),
 		showPublicBuilds = tostring(self.showPublicBuilds),
+		showFlavourText = tostring(self.showFlavourText),
 		dpiScaleOverridePercent = tostring(self.dpiScaleOverridePercent),
 	} })
 	local res, errMsg = common.xml.SaveXMLFile(setXML, self.userPath.."Settings.xml")
@@ -770,17 +775,16 @@ function main:SaveSettings()
 	end
 end
 
-function main:OpenPathPopup(invalidPath, ignoreBuild)
+function main:OpenPathPopup(invalidPath, errMsg, ignoreBuild)
 	local controls = { }
 	local defaultLabelPlacementX = 8
 
 	controls.label = new("LabelControl", { "TOPLEFT", nil, "TOPLEFT" }, { defaultLabelPlacementX, 20, 206, 16 }, function()
-		return "^7User settings path contains unicode characters and cannot be loaded."..
+		return "^7User settings path cannot be loaded: ".. errMsg ..
 		"\nCurrent Path: "..invalidPath:gsub("?", "^1?^7").."/Path of Building/"..
-		"\nSpecify a new location for your Settings.xml:"
-	end)
-	controls.explainButton = new("ButtonControl", { "LEFT", controls.label, "RIGHT" }, { 4, 0, 20, 20 }, "?", function()
-		OpenURL("https://github.com/PathOfBuildingCommunity/PathOfBuilding/wiki/Why-do-I-have-to-change-my-Settings-path%3F")
+		"\nIf this location is managed by OneDrive, navigate to that folder and manually try" ..
+		"\nto open Settings.xml in a text editor before re-opening Path of Building" ..
+		"\nOtherwise, specify a new location for your Settings.xml:"
 	end)
 	controls.userPath = new("EditControl", { "TOPLEFT", controls.label, "TOPLEFT" }, { 0, 60, 206, 20 }, invalidPath, nil, nil, nil, function(buf)
 		invalidPath = sanitiseText(buf)
@@ -881,7 +885,7 @@ function main:OpenOptionsPopup()
 		{ label = "250%", percent = 250 },
 	}, function(index, value)
 		self.dpiScaleOverridePercent = value.percent
-		SetDPIScaleOverridePercent(value.percent)
+		if SetDPIScaleOverridePercent then SetDPIScaleOverridePercent(value.percent) end
 	end)
 	controls.dpiScaleOverrideLabel = new("LabelControl", { "RIGHT", controls.dpiScaleOverride, "LEFT" }, { defaultLabelSpacingPx, 0, 0, 16 }, "^7UI scaling override:")
 	controls.dpiScaleOverride.tooltipText = "Overrides Windows DPI scaling inside Path of Building.\nChoose a percentage between 100% and 250% or revert to the system default."
@@ -957,6 +961,11 @@ function main:OpenOptionsPopup()
 	nextRow()
 	controls.showPublicBuilds = new("CheckBoxControl", { "TOPLEFT", nil, "TOPLEFT" }, { defaultLabelPlacementX, currentY, 20 }, "^7Show Latest/Trending builds:", function(state)
 		self.showPublicBuilds = state
+	end)
+
+	nextRow()
+	controls.showFlavourText = new("CheckBoxControl", { "TOPLEFT", nil, "TOPLEFT" }, { defaultLabelPlacementX, currentY, 20 }, "^7Styled Tooltips with Flavour Text:", function(state)
+		self.showFlavourText = state
 	end)
 
 	nextRow()
@@ -1047,6 +1056,7 @@ function main:OpenOptionsPopup()
 	controls.edgeSearchHighlight.state = self.edgeSearchHighlight
 	controls.titlebarName.state = self.showTitlebarName
 	controls.showPublicBuilds.state = self.showPublicBuilds
+	controls.showFlavourText.state = self.showFlavourText
 	local initialNodePowerTheme = self.nodePowerTheme
 	local initialColorPositive = self.colorPositive
 	local initialColorNegative = self.colorNegative
@@ -1066,6 +1076,7 @@ function main:OpenOptionsPopup()
 	local initialInvertSliderScrollDirection = self.invertSliderScrollDirection
 	local initialDisableDevAutoSave = self.disableDevAutoSave
 	local initialShowPublicBuilds = self.showPublicBuilds
+	local initialShowFlavourText = self.showFlavourText
 	local initialDpiScaleOverridePercent = self.dpiScaleOverridePercent
 
 	-- last line with buttons has more spacing
@@ -1092,7 +1103,7 @@ function main:OpenOptionsPopup()
 		if not launch.devMode then
 			main:SetManifestBranch(self.betaTest and "beta" or "master")
 		end
-		SetDPIScaleOverridePercent(self.dpiScaleOverridePercent)
+		if SetDPIScaleOverridePercent then SetDPIScaleOverridePercent(self.dpiScaleOverridePercent) end
 		main:ClosePopup()
 		main:SaveSettings()
 	end)
@@ -1119,8 +1130,9 @@ function main:OpenOptionsPopup()
 		self.invertSliderScrollDirection = initialInvertSliderScrollDirection
 		self.disableDevAutoSave = initialDisableDevAutoSave
 		self.showPublicBuilds = initialShowPublicBuilds
+		self.showFlavourText = initialShowFlavourText
 		self.dpiScaleOverridePercent = initialDpiScaleOverridePercent
-+		SetDPIScaleOverridePercent(self.dpiScaleOverridePercent)
+		if SetDPIScaleOverridePercent then SetDPIScaleOverridePercent(self.dpiScaleOverridePercent) end
 		main:ClosePopup()
 	end)
 	nextRow(1.5)
