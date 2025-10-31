@@ -354,5 +354,362 @@ function M.get_items()
   return result
 end
 
+
+-- Skill/Gem Creation and Modification API
+
+-- Create a new socket group
+-- params: { label?: string, slot?: string, enabled?: boolean, includeInFullDPS?: boolean }
+function M.create_socket_group(params)
+  if not build or not build.skillsTab then return nil, 'skills not initialized' end
+  if type(params) ~= 'table' then params = {} end
+
+  local socketGroup = {
+    label = params.label or '',
+    slot = params.slot,
+    enabled = params.enabled ~= false,
+    includeInFullDPS = params.includeInFullDPS == true,
+    gemList = {},
+    mainActiveSkill = 1,
+    mainActiveSkillCalcs = 1,
+  }
+
+  -- Get the active skill set
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  if not skillSet then return nil, 'active skill set not found' end
+
+  -- Add to socket group list
+  table.insert(skillSet.socketGroupList, socketGroup)
+  local index = #skillSet.socketGroupList
+
+  -- Process the socket group
+  if build.skillsTab.ProcessSocketGroup then
+    build.skillsTab:ProcessSocketGroup(socketGroup)
+  end
+
+  build.buildFlag = true
+  M.get_main_output()
+
+  return { index = index, label = socketGroup.label }
+end
+
+-- Add a gem to a socket group
+-- params: { groupIndex: number, gemName: string, level?: number, quality?: number, qualityId?: string, enabled?: boolean }
+function M.add_gem(params)
+  if not build or not build.skillsTab then return nil, 'skills not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+  if not params.groupIndex or not params.gemName then return nil, 'missing groupIndex or gemName' end
+
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  if not skillSet then return nil, 'active skill set not found' end
+
+  local groupIndex = tonumber(params.groupIndex)
+  local socketGroup = skillSet.socketGroupList[groupIndex]
+  if not socketGroup then return nil, 'socket group not found at index ' .. tostring(groupIndex) end
+
+  -- Create gem instance
+  local gemInstance = {
+    nameSpec = tostring(params.gemName),
+    level = tonumber(params.level) or 20,
+    quality = tonumber(params.quality) or 0,
+    qualityId = params.qualityId or 'Default',
+    enabled = params.enabled ~= false,
+    enableGlobal1 = true,
+    enableGlobal2 = false,
+    count = tonumber(params.count) or 1,
+  }
+
+  -- Try to find gem data
+  if build.data and build.data.gems then
+    for _, gemData in pairs(build.data.gems) do
+      if gemData.name == gemInstance.nameSpec or gemData.nameSpec == gemInstance.nameSpec then
+        gemInstance.gemId = gemData.id
+        if gemData.grantedEffect then
+          gemInstance.skillId = gemData.grantedEffect.id
+        elseif gemData.grantedEffectId then
+          gemInstance.skillId = gemData.grantedEffectId
+        end
+        gemInstance.gemData = gemData
+        break
+      end
+    end
+  end
+
+  table.insert(socketGroup.gemList, gemInstance)
+  local gemIndex = #socketGroup.gemList
+
+  if build.skillsTab.ProcessSocketGroup then
+    build.skillsTab:ProcessSocketGroup(socketGroup)
+  end
+
+  build.buildFlag = true
+  M.get_main_output()
+
+  return { gemIndex = gemIndex, name = gemInstance.nameSpec }
+end
+
+-- Set gem level
+-- params: { groupIndex: number, gemIndex: number, level: number }
+function M.set_gem_level(params)
+  if not build or not build.skillsTab then return nil, 'skills not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+  if not params.groupIndex or not params.gemIndex or not params.level then
+    return nil, 'missing groupIndex, gemIndex, or level'
+  end
+
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  if not skillSet then return nil, 'active skill set not found' end
+
+  local groupIndex = tonumber(params.groupIndex)
+  local gemIndex = tonumber(params.gemIndex)
+  local level = tonumber(params.level)
+
+  local socketGroup = skillSet.socketGroupList[groupIndex]
+  if not socketGroup then return nil, 'socket group not found' end
+
+  local gemInstance = socketGroup.gemList[gemIndex]
+  if not gemInstance then return nil, 'gem not found' end
+
+  if level < 1 or level > 40 then return nil, 'invalid level (must be 1-40)' end
+
+  gemInstance.level = level
+
+  if build.skillsTab.ProcessSocketGroup then
+    build.skillsTab:ProcessSocketGroup(socketGroup)
+  end
+
+  build.buildFlag = true
+  M.get_main_output()
+
+  return true
+end
+
+-- Set gem quality
+-- params: { groupIndex: number, gemIndex: number, quality: number, qualityId?: string }
+function M.set_gem_quality(params)
+  if not build or not build.skillsTab then return nil, 'skills not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+  if not params.groupIndex or not params.gemIndex or not params.quality then
+    return nil, 'missing groupIndex, gemIndex, or quality'
+  end
+
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  if not skillSet then return nil, 'active skill set not found' end
+
+  local groupIndex = tonumber(params.groupIndex)
+  local gemIndex = tonumber(params.gemIndex)
+  local quality = tonumber(params.quality)
+
+  local socketGroup = skillSet.socketGroupList[groupIndex]
+  if not socketGroup then return nil, 'socket group not found' end
+
+  local gemInstance = socketGroup.gemList[gemIndex]
+  if not gemInstance then return nil, 'gem not found' end
+
+  if quality < 0 or quality > 23 then return nil, 'invalid quality (must be 0-23)' end
+
+  gemInstance.quality = quality
+  if params.qualityId then
+    gemInstance.qualityId = tostring(params.qualityId)
+  end
+
+  if build.skillsTab.ProcessSocketGroup then
+    build.skillsTab:ProcessSocketGroup(socketGroup)
+  end
+
+  build.buildFlag = true
+  M.get_main_output()
+
+  return true
+end
+
+-- Remove a socket group
+-- params: { groupIndex: number }
+function M.remove_skill(params)
+  if not build or not build.skillsTab then return nil, 'skills not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+  if not params.groupIndex then return nil, 'missing groupIndex' end
+
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  if not skillSet then return nil, 'active skill set not found' end
+
+  local groupIndex = tonumber(params.groupIndex)
+  local socketGroup = skillSet.socketGroupList[groupIndex]
+  if not socketGroup then return nil, 'socket group not found' end
+
+  -- Don't allow removing special groups with sources
+  if socketGroup.source then
+    return nil, 'cannot remove special socket groups (item/node granted skills)'
+  end
+
+  table.remove(skillSet.socketGroupList, groupIndex)
+
+  build.buildFlag = true
+  M.get_main_output()
+
+  return true
+end
+
+-- Remove a gem from a socket group
+-- params: { groupIndex: number, gemIndex: number }
+function M.remove_gem(params)
+  if not build or not build.skillsTab then return nil, 'skills not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+  if not params.groupIndex or not params.gemIndex then
+    return nil, 'missing groupIndex or gemIndex'
+  end
+
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  if not skillSet then return nil, 'active skill set not found' end
+
+  local groupIndex = tonumber(params.groupIndex)
+  local gemIndex = tonumber(params.gemIndex)
+
+  local socketGroup = skillSet.socketGroupList[groupIndex]
+  if not socketGroup then return nil, 'socket group not found' end
+
+  local gemInstance = socketGroup.gemList[gemIndex]
+  if not gemInstance then return nil, 'gem not found' end
+
+  table.remove(socketGroup.gemList, gemIndex)
+
+  if build.skillsTab.ProcessSocketGroup then
+    build.skillsTab:ProcessSocketGroup(socketGroup)
+  end
+
+  build.buildFlag = true
+  M.get_main_output()
+
+  return true
+end
+
+
+-- Search for passive tree nodes by keyword
+-- params: { keyword: string, nodeType?: string ('normal'|'notable'|'keystone'), maxResults?: number, includeAllocated?: boolean }
+function M.search_nodes(params)
+  if not build or not build.spec then return nil, 'build/spec not initialized' end
+  if type(params) ~= 'table' or type(params.keyword) ~= 'string' then
+    return nil, 'missing or invalid keyword'
+  end
+
+  local keyword = params.keyword:lower()
+  local nodeType = params.nodeType and params.nodeType:lower() or nil
+  local maxResults = tonumber(params.maxResults) or 50
+  local includeAllocated = params.includeAllocated ~= false
+
+  local results = {}
+  local count = 0
+
+  -- Get allocated nodes set for quick lookup
+  local allocatedSet = {}
+  if build.spec.allocNodes then
+    for id, _ in pairs(build.spec.allocNodes) do
+      allocatedSet[id] = true
+    end
+  end
+
+  -- Search through all nodes
+  for id, node in pairs(build.spec.nodes) do
+    if count >= maxResults then break end
+
+    -- Skip if already allocated and we don't want allocated nodes
+    if not includeAllocated and allocatedSet[id] then
+      goto continue
+    end
+
+    -- Filter by node type if specified
+    if nodeType then
+      local nType = 'normal'
+      if node.isKeystone then nType = 'keystone'
+      elseif node.isNotable then nType = 'notable'
+      elseif node.isJewelSocket then nType = 'jewel'
+      elseif node.isMultipleChoiceOption then nType = 'mastery'
+      elseif node.ascendancyName then nType = 'ascendancy'
+      end
+      if nType ~= nodeType then goto continue end
+    end
+
+    -- Check if keyword matches name
+    local matches = false
+    if node.name and node.name:lower():find(keyword, 1, true) then
+      matches = true
+    end
+
+    -- Check if keyword matches stats/modifiers
+    if not matches and node.sd then
+      for _, stat in ipairs(node.sd) do
+        if type(stat) == 'string' and stat:lower():find(keyword, 1, true) then
+          matches = true
+          break
+        end
+      end
+    end
+
+    -- Check modifiers list
+    if not matches and node.modList then
+      for _, mod in ipairs(node.modList) do
+        local modStr = tostring(mod)
+        if modStr:lower():find(keyword, 1, true) then
+          matches = true
+          break
+        end
+      end
+    end
+
+    if matches then
+      local nodeType = 'normal'
+      if node.isKeystone then nodeType = 'keystone'
+      elseif node.isNotable then nodeType = 'notable'
+      elseif node.isJewelSocket then nodeType = 'jewel'
+      elseif node.isMultipleChoiceOption then nodeType = 'mastery'
+      elseif node.ascendancyName then nodeType = 'ascendancy'
+      end
+
+      local stats = {}
+      if node.sd then
+        for _, stat in ipairs(node.sd) do
+          if type(stat) == 'string' then
+            table.insert(stats, stat)
+          end
+        end
+      end
+
+      table.insert(results, {
+        id = id,
+        name = node.name or 'Unnamed',
+        type = nodeType,
+        stats = stats,
+        allocated = allocatedSet[id] == true,
+        x = node.x,
+        y = node.y,
+        orbit = node.orbit,
+        orbitIndex = node.orbitIndex,
+        ascendancyName = node.ascendancyName,
+      })
+      count = count + 1
+    end
+
+    ::continue::
+  end
+
+  -- Sort results: keystones first, then notables, then normal
+  table.sort(results, function(a, b)
+    local typeOrder = { keystone = 1, notable = 2, jewel = 3, mastery = 4, ascendancy = 5, normal = 6 }
+    local aOrder = typeOrder[a.type] or 99
+    local bOrder = typeOrder[b.type] or 99
+    if aOrder ~= bOrder then
+      return aOrder < bOrder
+    end
+    return (a.name or '') < (b.name or '')
+  end)
+
+  return { nodes = results, count = #results }
+end
+
 return M
 

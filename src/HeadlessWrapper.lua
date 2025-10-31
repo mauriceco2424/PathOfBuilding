@@ -266,6 +266,7 @@ if os.getenv('POB_API_STDIO') == '1' or has_flag('--stdio') then
     mainObject.main:SetMode("BUILD", false, name or "", xmlText)
     runCallback("OnFrame")
   end
+  _G.newBuild = newBuild
   _G.loadBuildFromXML = loadBuildFromXML
   _G.build = mainObject.main.modes["BUILD"]
 

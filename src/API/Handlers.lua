@@ -65,6 +65,14 @@ handlers.version = function(params)
   return { ok = true, version = version_meta() }
 end
 
+handlers.new_build = function(params)
+  if not _G.newBuild then
+    return { ok = false, error = 'headless wrapper not initialized' }
+  end
+  _G.newBuild()
+  return { ok = true }
+end
+
 handlers.load_build_xml = function(params)
   if not params or type(params.xml) ~= 'string' then
     return { ok = false, error = 'missing xml' }
@@ -179,6 +187,48 @@ handlers.set_config = function(params)
   if not ok2 then return { ok = false, error = err or 'failed to set config' } end
   local cfg = BuildOps.get_config()
   return { ok = true, config = cfg }
+end
+
+handlers.create_socket_group = function(params)
+  local res, err = BuildOps.create_socket_group(params or {})
+  if not res then return { ok = false, error = err or 'failed to create socket group' } end
+  return { ok = true, socketGroup = res }
+end
+
+handlers.add_gem = function(params)
+  local res, err = BuildOps.add_gem(params or {})
+  if not res then return { ok = false, error = err or 'failed to add gem' } end
+  return { ok = true, gem = res }
+end
+
+handlers.set_gem_level = function(params)
+  local ok2, err = BuildOps.set_gem_level(params or {})
+  if not ok2 then return { ok = false, error = err or 'failed to set gem level' } end
+  return { ok = true }
+end
+
+handlers.set_gem_quality = function(params)
+  local ok2, err = BuildOps.set_gem_quality(params or {})
+  if not ok2 then return { ok = false, error = err or 'failed to set gem quality' } end
+  return { ok = true }
+end
+
+handlers.remove_skill = function(params)
+  local ok2, err = BuildOps.remove_skill(params or {})
+  if not ok2 then return { ok = false, error = err or 'failed to remove skill' } end
+  return { ok = true }
+end
+
+handlers.remove_gem = function(params)
+  local ok2, err = BuildOps.remove_gem(params or {})
+  if not ok2 then return { ok = false, error = err or 'failed to remove gem' } end
+  return { ok = true }
+end
+
+handlers.search_nodes = function(params)
+  local res, err = BuildOps.search_nodes(params or {})
+  if not res then return { ok = false, error = err or 'failed to search nodes' } end
+  return { ok = true, results = res }
 end
 
 return {
