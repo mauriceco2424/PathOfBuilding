@@ -1,17 +1,23 @@
 -- API/Handlers.lua
 -- Shared JSON-RPC handlers for PoB API (transport-agnostic)
 
+-- Debug logging control
+local DEBUG = os.getenv('POB_API_DEBUG') == '1'
+local function debug_log(msg)
+  if DEBUG then io.stderr:write('[Handlers] ' .. msg .. '\n') end
+end
+
 -- Resolve BuildOps reliably regardless of CWD
 local BuildOps
 do
-  io.stderr:write('[Handlers] Attempting to require API.BuildOps\n')
+  debug_log('Attempting to require API.BuildOps')
   local ok_ops, mod = pcall(require, 'API.BuildOps')
-  io.stderr:write('[Handlers] pcall require result: ok=' .. tostring(ok_ops) .. ', mod=' .. tostring(mod) .. '\n')
+  debug_log('pcall require result: ok=' .. tostring(ok_ops) .. ', mod=' .. tostring(mod))
   if ok_ops and mod then
-    io.stderr:write('[Handlers] Successfully loaded BuildOps via require\n')
+    debug_log('Successfully loaded BuildOps via require')
     BuildOps = mod
   else
-    io.stderr:write('[Handlers] require failed, trying dofile fallbacks\n')
+    debug_log('require failed, trying dofile fallbacks')
     -- Try path relative to this file's directory
     local dir = ''
     local info = debug and debug.getinfo and debug.getinfo(1, 'S')
@@ -24,14 +30,14 @@ do
     local function try(p)
       if p then table.insert(tried, p) end
       if not p then return false end
-      io.stderr:write('[Handlers] Trying to load: ' .. tostring(p) .. '\n')
+      debug_log('Trying to load: ' .. tostring(p))
       local ok2, m = pcall(dofile, p)
       if ok2 and m then
-        io.stderr:write('[Handlers] Successfully loaded BuildOps from: ' .. tostring(p) .. '\n')
+        debug_log('Successfully loaded BuildOps from: ' .. tostring(p))
         BuildOps = m
         return true
       end
-      io.stderr:write('[Handlers] Failed to load from: ' .. tostring(p) .. ' - error: ' .. tostring(m) .. '\n')
+      debug_log('Failed to load from: ' .. tostring(p) .. ' - error: ' .. tostring(m))
       return false
     end
     if not BuildOps then
@@ -47,11 +53,15 @@ do
   end
 end
 
+-- API version (semantic versioning)
+local API_VERSION = "1.0.0"
+
 local function version_meta()
   return {
-    number   = _G.launch and launch.versionNumber or '?',
-    branch   = _G.launch and launch.versionBranch or '?',
-    platform = _G.launch and launch.versionPlatform or '?',
+    number      = _G.launch and launch.versionNumber or '?',
+    branch      = _G.launch and launch.versionBranch or '?',
+    platform    = _G.launch and launch.versionPlatform or '?',
+    apiVersion  = API_VERSION,
   }
 end
 
@@ -89,34 +99,34 @@ handlers.get_stats = function(params)
   local fields = params and params.fields or nil
   local stats, err = BuildOps.export_stats(fields)
   if not stats then
-    return { ok = false, error = err or 'failed to get stats' }
+    return { ok = false, error = err }
   end
   return { ok = true, stats = stats }
 end
 
 handlers.get_items = function(params)
   local list, err = BuildOps.get_items()
-  if not list then return { ok = false, error = err or 'failed to get items' } end
+  if not list then return { ok = false, error = err } end
   return { ok = true, items = list }
 end
 
 handlers.get_skills = function(params)
   local info, err = BuildOps.get_skills()
-  if not info then return { ok = false, error = err or 'failed to get skills' } end
+  if not info then return { ok = false, error = err } end
   return { ok = true, skills = info }
 end
 
 handlers.get_tree = function(params)
   local tree, err = BuildOps.get_tree()
   if not tree then
-    return { ok = false, error = err or 'failed to get tree' }
+    return { ok = false, error = err }
   end
   return { ok = true, tree = tree }
 end
 
 handlers.set_main_selection = function(params)
   local ok2, err = BuildOps.set_main_selection(params or {})
-  if not ok2 then return { ok = false, error = err or 'failed to set main selection' } end
+  if not ok2 then return { ok = false, error = err } end
   local skills = BuildOps.get_skills()
   return { ok = true, skills = skills }
 end
@@ -124,7 +134,7 @@ end
 handlers.set_tree = function(params)
   local ok2, err = BuildOps.set_tree(params or {})
   if not ok2 then
-    return { ok = false, error = err or 'failed to set tree' }
+    return { ok = false, error = err }
   end
   local tree = BuildOps.get_tree()
   return { ok = true, tree = tree }
@@ -132,13 +142,13 @@ end
 
 handlers.add_item_text = function(params)
   local res, err = BuildOps.add_item_text(params or {})
-  if not res then return { ok = false, error = err or 'failed to add item' } end
+  if not res then return { ok = false, error = err } end
   return { ok = true, item = res }
 end
 
 handlers.export_build_xml = function(params)
   local xml, err = BuildOps.export_build_xml()
-  if not xml then return { ok = false, error = err or 'failed to export xml' } end
+  if not xml then return { ok = false, error = err } end
   return { ok = true, xml = xml }
 end
 
@@ -147,44 +157,44 @@ handlers.set_level = function(params)
     return { ok = false, error = 'missing level' }
   end
   local ok2, err = BuildOps.set_level(params.level)
-  if not ok2 then return { ok = false, error = err or 'failed to set level' } end
+  if not ok2 then return { ok = false, error = err } end
   return { ok = true }
 end
 
 handlers.set_flask_active = function(params)
   local ok2, err = BuildOps.set_flask_active(params or {})
-  if not ok2 then return { ok = false, error = err or 'failed to set flask' } end
+  if not ok2 then return { ok = false, error = err } end
   return { ok = true }
 end
 
 handlers.get_build_info = function(params)
   local info, err = BuildOps.get_build_info()
-  if not info then return { ok = false, error = err or 'failed to get info' } end
+  if not info then return { ok = false, error = err } end
   return { ok = true, info = info }
 end
 
 handlers.update_tree_delta = function(params)
   local ok2, err = BuildOps.update_tree_delta(params or {})
-  if not ok2 then return { ok = false, error = err or 'failed to update tree' } end
+  if not ok2 then return { ok = false, error = err } end
   local tree = BuildOps.get_tree()
   return { ok = true, tree = tree }
 end
 
 handlers.calc_with = function(params)
   local out, base = BuildOps.calc_with(params or {})
-  if not out then return { ok = false, error = base or 'failed to calc' } end
+  if not out then return { ok = false, error = base } end
   return { ok = true, output = out }
 end
 
 handlers.get_config = function(params)
   local cfg, err = BuildOps.get_config()
-  if not cfg then return { ok = false, error = err or 'failed to get config' } end
+  if not cfg then return { ok = false, error = err } end
   return { ok = true, config = cfg }
 end
 
 handlers.set_config = function(params)
   local ok2, err = BuildOps.set_config(params or {})
-  if not ok2 then return { ok = false, error = err or 'failed to set config' } end
+  if not ok2 then return { ok = false, error = err } end
   local cfg = BuildOps.get_config()
   return { ok = true, config = cfg }
 end

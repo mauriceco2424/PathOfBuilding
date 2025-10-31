@@ -1,6 +1,12 @@
 -- API/Server.lua
 -- Simple stdio JSON-RPC loop exposing a tiny PoB API
 
+-- Debug logging control
+local DEBUG = os.getenv('POB_API_DEBUG') == '1'
+local function debug_log(msg)
+  if DEBUG then io.stderr:write('[Server] ' .. msg .. '\n') end
+end
+
 -- json loader with robust fallback to runtime path
 local ok, json = pcall(require, 'dkjson')
 if not ok then
@@ -35,13 +41,13 @@ local function read_line()
 end
 
 -- Load common handlers via require for path robustness
-io.stderr:write('[Server] About to require API.Handlers\n')
+debug_log('About to require API.Handlers')
 local ok, API = pcall(require, 'API.Handlers')
 if not ok then
-  io.stderr:write('[Server] Failed to require API.Handlers: ' .. tostring(API) .. '\n')
+  debug_log('Failed to require API.Handlers: ' .. tostring(API))
   error('Failed to load API.Handlers: ' .. tostring(API))
 end
-io.stderr:write('[Server] Successfully loaded API.Handlers\n')
+debug_log('Successfully loaded API.Handlers')
 local handlers = API.handlers
 local function get_version_meta()
   return API.version_meta()
