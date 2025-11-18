@@ -58,6 +58,92 @@ function M.export_stats(fields)
   return result
 end
 
+-- Helper function to safely copy a table, stripping functions/userdata/metatables
+-- and handling table keys (which JSON cannot serialize)
+local function deepCopySafe(tbl, seen)
+  if type(tbl) ~= 'table' then
+    return tbl
+  end
+  seen = seen or {}
+  if seen[tbl] then
+    return nil  -- Avoid reference cycles
+  end
+  seen[tbl] = true
+
+  local out = {}
+  for k, v in pairs(tbl) do
+    -- Skip keys that are not JSON-serializable (strings, numbers, booleans)
+    local ktype = type(k)
+    if ktype ~= 'string' and ktype ~= 'number' and ktype ~= 'boolean' then
+      -- Skip table/function/userdata keys
+      goto continue
+    end
+
+    local vtype = type(v)
+    if vtype == 'table' then
+      local copied = deepCopySafe(v, seen)
+      if copied ~= nil then
+        out[k] = copied
+      end
+    elseif vtype ~= 'function' and vtype ~= 'userdata' and vtype ~= 'thread' then
+      out[k] = v
+    end
+
+    ::continue::
+  end
+  return out
+end
+
+-- Export full calculation snapshot (all PoB calculation outputs)
+-- This provides access to all internal PoB calculations including EHP, per-skill DPS, etc.
+function M.get_full_calcs()
+  if not build or not build.calcsTab then
+    return nil, 'build not initialized'
+  end
+
+  -- Ensure calculations are up to date
+  if build.calcsTab.BuildOutput then
+    build.calcsTab:BuildOutput()
+  end
+
+  local calcsTab = build.calcsTab
+  if not calcsTab then
+    return nil, 'calcsTab not available'
+  end
+
+  -- Extract all calculation outputs
+  local mainOutput = calcsTab.mainOutput or {}
+  local output = calcsTab.output or {}
+  local skillOutput = calcsTab.skillOutput or {}
+  local breakdown = calcsTab.breakdown or {}
+
+  -- Extract config and skills context
+  local configTab = build.configTab
+  local skillsTab = build.skillsTab
+
+  local configInput = configTab and configTab.input or {}
+  local socketGroups = skillsTab and skillsTab.socketGroupList or {}
+
+  -- Identify active skill
+  local activeSkillName = nil
+  if build.activeSkill and build.activeSkill.activeEffect and build.activeSkill.activeEffect.grantedEffect then
+    activeSkillName = build.activeSkill.activeEffect.grantedEffect.name
+  end
+
+  -- Deep copy all outputs to JSON-serializable format
+  local result = {
+    mainOutput = deepCopySafe(mainOutput),
+    output = deepCopySafe(output),
+    skillOutput = deepCopySafe(skillOutput),
+    breakdown = deepCopySafe(breakdown),
+    config = deepCopySafe(configInput),
+    skills = deepCopySafe(socketGroups),
+    activeSkill = activeSkillName,
+  }
+
+  return result
+end
+
 -- Read current tree allocation and metadata
 function M.get_tree()
   if not build or not build.spec then

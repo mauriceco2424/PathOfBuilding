@@ -104,6 +104,14 @@ handlers.get_stats = function(params)
   return { ok = true, stats = stats }
 end
 
+handlers.get_full_calcs = function(params)
+  local calcs, err = BuildOps.get_full_calcs()
+  if not calcs then
+    return { ok = false, error = err }
+  end
+  return { ok = true, data = calcs }
+end
+
 handlers.get_items = function(params)
   local list, err = BuildOps.get_items()
   if not list then return { ok = false, error = err } end

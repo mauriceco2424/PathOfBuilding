@@ -2,6 +2,9 @@
 -- This wrapper allows the program to run headless on any OS (in theory)
 -- It can be run using a standard lua interpreter, although LuaJIT is preferable
 
+-- Load LibDeflate for compression/decompression support
+local scriptDir = arg[0]:match("(.*/)")  or "./"
+local LibDeflate = dofile(scriptDir .. "LibDeflate.lua")
 
 -- Callbacks
 local callbackTable = { }
@@ -72,7 +75,30 @@ function GetAsyncCount()
 end
 
 -- Search Handles
-function NewFileSearch() end
+function NewFileSearch(pattern, dirOnly)
+	-- Basic implementation for file existence checks
+	-- Simplified version that checks if a single file exists
+	if not pattern then return nil end
+
+	-- Extract the path from pattern (remove wildcards)
+	local path = pattern:gsub("[*].*$", "")
+
+	-- Try to open the file
+	local file = io.open(path, "r")
+	if file then
+		file:close()
+		local fileName = path:match("[^/]+$") or path
+
+		-- Return a simple file search handle
+		return {
+			GetFileName = function() return fileName end,
+			GetFileModifiedTime = function() return os.time() end,
+			NextFile = function() return nil end  -- Only returns first match
+		}
+	end
+
+	return nil
+end
 
 -- General Functions
 function SetWindowTitle(title) end
@@ -85,18 +111,31 @@ function IsKeyDown(keyName) end
 function Copy(text) end
 function Paste() end
 function Deflate(data)
-	-- TODO: Might need this
-	return ""
+	-- Use LibDeflate to compress data with zlib format
+	if not data or #data == 0 then
+		return ""
+	end
+	local compressed = LibDeflate:CompressZlib(data)
+	return compressed or ""
 end
+
 function Inflate(data)
-	-- TODO: And this
-	return ""
+	-- Use LibDeflate to decompress zlib-compressed data
+	if not data or #data == 0 then
+		return ""
+	end
+	local decompressed = LibDeflate:DecompressZlib(data)
+	return decompressed or ""
 end
+
 function GetTime()
 	return 0
 end
+
 function GetScriptPath()
-	return ""
+	-- Return the script directory path
+	-- In Docker container, this is /app/src
+	return scriptDir or "/app/src/"
 end
 function GetRuntimePath()
 	return ""
