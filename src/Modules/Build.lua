@@ -1883,10 +1883,12 @@ function buildMode:SaveDB(fileName)
 	end
 
 	-- Call on all savers to save their data in their respective sections
-	for elem, saver in pairs(self.savers) do
-		local node = { elem = elem }
-		saver:Save(node)
-		t_insert(dbXML, node)
+	if self.savers then
+		for elem, saver in pairs(self.savers) do
+			local node = { elem = elem }
+			saver:Save(node)
+			t_insert(dbXML, node)
+		end
 	end
 
 	-- Compose the XML
