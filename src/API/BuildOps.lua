@@ -816,4 +816,82 @@ function M.search_nodes(params)
   return { nodes = results, count = #results }
 end
 
+
+-- Find shortest path from allocated nodes to a target node
+-- params: { targetNodeId: number }
+-- returns: { path: [...], cost: number, targetNode: {...} }
+function M.find_path(params)
+  if not build or not build.spec then return nil, 'build/spec not initialized' end
+  if type(params) ~= 'table' or not params.targetNodeId then
+    return nil, 'missing targetNodeId'
+  end
+
+  local targetId = tonumber(params.targetNodeId)
+  local targetNode = build.spec.nodes[targetId]
+  if not targetNode then
+    return nil, 'target node not found: ' .. tostring(targetId)
+  end
+
+  -- If target is already allocated, no path needed
+  if targetNode.alloc then
+    return {
+      path = {},
+      cost = 0,
+      targetNode = {
+        id = targetNode.id,
+        name = targetNode.name or targetNode.dn,
+        type = targetNode.type,
+        allocated = true
+      }
+    }
+  end
+
+  -- Run BuildPathFromNode from all allocated nodes
+  -- This populates node.pathDist and node.path for all nodes
+  if build.spec.BuildPathFromNode then
+    -- Build paths from all allocated nodes
+    for nodeId, node in pairs(build.spec.nodes) do
+      if node.alloc then
+        build.spec:BuildPathFromNode(node)
+      end
+    end
+  else
+    return nil, 'pathfinding not available (BuildPathFromNode missing)'
+  end
+
+  -- Check if target is reachable
+  if not targetNode.pathDist or targetNode.pathDist >= 9999 then
+    return nil, 'target node is not reachable from allocated nodes'
+  end
+
+  -- Extract path from target back to root
+  local pathNodes = {}
+  if targetNode.path then
+    -- node.path is stored in reverse (target first, then parents)
+    for i = #targetNode.path, 1, -1 do
+      local node = targetNode.path[i]
+      if not node.alloc then  -- Only include unallocated nodes in path
+        table.insert(pathNodes, {
+          id = node.id,
+          name = node.name or node.dn,
+          type = node.type,
+          stats = node.sd or {}
+        })
+      end
+    end
+  end
+
+  return {
+    path = pathNodes,
+    cost = targetNode.pathDist,
+    targetNode = {
+      id = targetNode.id,
+      name = targetNode.name or targetNode.dn,
+      type = targetNode.type,
+      stats = targetNode.sd or {},
+      allocated = false
+    }
+  }
+end
+
 return M

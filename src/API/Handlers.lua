@@ -249,6 +249,12 @@ handlers.search_nodes = function(params)
   return { ok = true, results = res }
 end
 
+handlers.find_path = function(params)
+  local res, err = BuildOps.find_path(params or {})
+  if not res then return { ok = false, error = err or 'failed to find path' } end
+  return { ok = true, result = res }
+end
+
 return {
   handlers = handlers,
   version_meta = version_meta,
