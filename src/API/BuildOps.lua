@@ -229,8 +229,11 @@ function M.get_build_info()
   local info = {
     name = build.buildName,
     level = build.characterLevel,
-    className = build and build.buildClassName or (build.Build and build.Build.className) or nil,
-    ascendClassName = build and build.buildAscendName or (build.Build and build.Build.ascendClassName) or nil,
+    -- Get class names from spec (where they're actually stored after build load)
+    className = build.spec and build.spec.curClassName or nil,
+    ascendClassName = build.spec and build.spec.curAscendClassName or nil,
+    classId = build.spec and build.spec.curClassId or nil,
+    ascendClassId = build.spec and build.spec.curAscendClassId or nil,
     treeVersion = build.targetVersion or (build.spec and build.spec.treeVersion) or nil,
   }
   return info
@@ -433,23 +436,27 @@ function M.get_items()
     local slotCtrl = itemsTab.slots[slotName]
     if not slotCtrl then return end
     local selId = slotCtrl.selItemId or 0
-    local entry = { slot = slotName, id = selId }
+    -- Only include slots with equipped items
     if selId > 0 then
       local it = itemsTab.items[selId]
       if it then
-        entry.name = it.name
-        entry.baseName = it.baseName
-        entry.type = it.type
-        entry.rarity = it.rarity
-        entry.raw = it.raw
+        local entry = {
+          slot = slotName,
+          id = selId,
+          name = it.name,
+          baseName = it.baseName,
+          type = it.type,
+          rarity = it.rarity,
+          raw = it.raw
+        }
+        -- Flask/Tincture activation flag stored in activeItemSet
+        local set = itemsTab.activeItemSet
+        if set and set[slotName] and set[slotName].active ~= nil then
+          entry.active = set[slotName].active and true or false
+        end
+        table.insert(result, entry)
       end
     end
-    -- Flask/Tincture activation flag stored in activeItemSet
-    local set = itemsTab.activeItemSet
-    if set and set[slotName] and set[slotName].active ~= nil then
-      entry.active = set[slotName].active and true or false
-    end
-    table.insert(result, entry)
   end
   for _, slot in ipairs(ordered) do
     if slot and slot.slotName then add_slot(slot.slotName) end
