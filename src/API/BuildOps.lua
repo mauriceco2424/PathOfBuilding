@@ -422,7 +422,29 @@ function M.set_flask_active(params)
 end
 
 
--- Get equipped items summary
+-- Helper to extract mod line data for JSON serialization
+local function extractModLine(modLine)
+  if not modLine then return nil end
+  local entry = {
+    line = modLine.line,
+    range = modLine.range,
+    modTags = modLine.modTags or {},
+  }
+  -- Boolean flags
+  if modLine.crafted then entry.crafted = true end
+  if modLine.fractured then entry.fractured = true end
+  if modLine.implicit then entry.implicit = true end
+  if modLine.eater then entry.eater = true end
+  if modLine.exarch then entry.exarch = true end
+  if modLine.scourge then entry.scourge = true end
+  if modLine.crucible then entry.crucible = true end
+  if modLine.enchant then entry.enchant = true end
+  if modLine.synthesis then entry.synthesis = true end
+  if modLine.custom then entry.custom = true end
+  return entry
+end
+
+-- Get equipped items summary with full mod data
 function M.get_items()
   if not build or not build.itemsTab then return nil, 'items not initialized' end
   local itemsTab = build.itemsTab
@@ -447,8 +469,129 @@ function M.get_items()
           baseName = it.baseName,
           type = it.type,
           rarity = it.rarity,
-          raw = it.raw
+          raw = it.raw,
+          -- Item metadata
+          itemLevel = it.itemLevel,
+          quality = it.quality,
+          -- Item flags
+          corrupted = it.corrupted or false,
+          mirrored = it.mirrored or false,
+          fractured = it.fractured or false,
+          synthesised = it.synthesised or false,
+          split = it.split or false,
+          veiled = it.veiled or false,
+          -- Influence flags
+          shaperItem = it.shaperItem or false,
+          elderItem = it.elderItem or false,
+          crusaderItem = it.crusaderItem or false,
+          redeemerItem = it.redeemerItem or false,
+          hunterItem = it.hunterItem or false,
+          warlordItem = it.warlordItem or false,
         }
+
+        -- Affix data (prefix/suffix mod IDs and ranges)
+        entry.prefixes = {}
+        if it.prefixes then
+          for _, p in ipairs(it.prefixes) do
+            if p.modId and p.modId ~= "None" then
+              table.insert(entry.prefixes, {
+                modId = p.modId,
+                range = p.range
+              })
+            end
+          end
+        end
+        entry.suffixes = {}
+        if it.suffixes then
+          for _, s in ipairs(it.suffixes) do
+            if s.modId and s.modId ~= "None" then
+              table.insert(entry.suffixes, {
+                modId = s.modId,
+                range = s.range
+              })
+            end
+          end
+        end
+
+        -- Affix counts and limits
+        entry.prefixCount = #entry.prefixes
+        entry.suffixCount = #entry.suffixes
+        -- Most rare items have 3 prefix/suffix slots, but some bases differ
+        -- For now, use standard limits (can be enhanced later with base-specific data)
+        if it.rarity == "RARE" or it.rarity == "MAGIC" then
+          entry.maxPrefixes = it.rarity == "MAGIC" and 1 or 3
+          entry.maxSuffixes = it.rarity == "MAGIC" and 1 or 3
+        end
+
+        -- Structured mod lines
+        entry.implicitMods = {}
+        if it.implicitModLines then
+          for _, modLine in ipairs(it.implicitModLines) do
+            local mod = extractModLine(modLine)
+            if mod then table.insert(entry.implicitMods, mod) end
+          end
+        end
+
+        entry.explicitMods = {}
+        if it.explicitModLines then
+          for _, modLine in ipairs(it.explicitModLines) do
+            local mod = extractModLine(modLine)
+            if mod then table.insert(entry.explicitMods, mod) end
+          end
+        end
+
+        entry.enchantMods = {}
+        if it.enchantModLines then
+          for _, modLine in ipairs(it.enchantModLines) do
+            local mod = extractModLine(modLine)
+            if mod then table.insert(entry.enchantMods, mod) end
+          end
+        end
+
+        entry.scourgeMods = {}
+        if it.scourgeModLines then
+          for _, modLine in ipairs(it.scourgeModLines) do
+            local mod = extractModLine(modLine)
+            if mod then table.insert(entry.scourgeMods, mod) end
+          end
+        end
+
+        entry.crucibleMods = {}
+        if it.crucibleModLines then
+          for _, modLine in ipairs(it.crucibleModLines) do
+            local mod = extractModLine(modLine)
+            if mod then table.insert(entry.crucibleMods, mod) end
+          end
+        end
+
+        -- Catalyst info
+        if it.catalyst then
+          local catalystNames = {"Abrasive", "Accelerating", "Fertile", "Imbued", "Intrinsic", "Noxious", "Prismatic", "Tempering", "Turbulent", "Unstable"}
+          entry.catalyst = catalystNames[it.catalyst]
+          entry.catalystQuality = it.catalystQuality or 20
+        end
+
+        -- Requirements
+        if it.requirements then
+          entry.requirements = {
+            level = it.requirements.level,
+            str = it.requirements.str > 0 and it.requirements.str or nil,
+            dex = it.requirements.dex > 0 and it.requirements.dex or nil,
+            int = it.requirements.int > 0 and it.requirements.int or nil,
+          }
+        end
+
+        -- Sockets
+        if it.sockets and #it.sockets > 0 then
+          entry.sockets = {}
+          for _, socket in ipairs(it.sockets) do
+            table.insert(entry.sockets, {
+              color = socket.color,
+              group = socket.group
+            })
+          end
+        end
+
         -- Flask/Tincture activation flag stored in activeItemSet
         local set = itemsTab.activeItemSet
         if set and set[slotName] and set[slotName].active ~= nil then
