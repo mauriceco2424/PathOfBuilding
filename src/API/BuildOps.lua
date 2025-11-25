@@ -303,6 +303,65 @@ function M.get_config()
   return cfg
 end
 
+-- Get full config values including combat conditions
+function M.get_full_config()
+  if not build or not build.configTab then return nil, 'build/config not initialized' end
+  local input = build.configTab.input or {}
+  local cfg = {
+    -- Basic config
+    bandit = input.bandit or build.bandit,
+    pantheonMajorGod = input.pantheonMajorGod or build.pantheonMajorGod,
+    pantheonMinorGod = input.pantheonMinorGod or build.pantheonMinorGod,
+    enemyLevel = build.configTab.enemyLevel,
+    resistancePenalty = input.resistancePenalty,
+
+    -- Charges
+    usePowerCharges = input.usePowerCharges or false,
+    useFrenzyCharges = input.useFrenzyCharges or false,
+    useEnduranceCharges = input.useEnduranceCharges or false,
+    overridePowerCharges = input.overridePowerCharges,
+    overrideFrenzyCharges = input.overrideFrenzyCharges,
+    overrideEnduranceCharges = input.overrideEnduranceCharges,
+
+    -- Combat buffs
+    buffOnslaught = input.buffOnslaught or false,
+    buffFortification = input.buffFortification or false,
+    overrideFortification = input.overrideFortification,
+    buffTailwind = input.buffTailwind or false,
+    buffAdrenaline = input.buffAdrenaline or false,
+    buffUnholyMight = input.buffUnholyMight or false,
+    conditionUsingFlask = input.conditionUsingFlask or false,
+
+    -- Combat conditions
+    conditionLowLife = input.conditionLowLife or false,
+    conditionFullLife = input.conditionFullLife or false,
+    conditionLowMana = input.conditionLowMana or false,
+    conditionFullMana = input.conditionFullMana or false,
+
+    -- Enemy conditions
+    enemyIsBoss = input.enemyIsBoss or "None",
+    conditionEnemyIntimidated = input.conditionEnemyIntimidated or false,
+    conditionEnemyUnnerved = input.conditionEnemyUnnerved or false,
+    conditionEnemyCoveredInAsh = input.conditionEnemyCoveredInAsh or false,
+    conditionEnemyCoveredInFrost = input.conditionEnemyCoveredInFrost or false,
+    enemyIsChilled = input.conditionEnemyChilled or false,
+    enemyIsShocked = input.conditionEnemyShocked or false,
+    enemyIsCrushed = input.conditionEnemyCrushed or false,
+    enemyIsBlinded = input.conditionEnemyBlinded or false,
+
+    -- Enemy stats overrides
+    enemyFireResist = input.enemyFireResist,
+    enemyColdResist = input.enemyColdResist,
+    enemyLightningResist = input.enemyLightningResist,
+    enemyChaosResist = input.enemyChaosResist,
+    enemyPhysicalDamageReduction = input.enemyPhysicalDamageReduction,
+
+    -- Custom modifiers
+    customMods = input.customMods or "",
+  }
+  return cfg
+end
+
 -- Set selected config values and rebuild
 function M.set_config(params)
   if not build or not build.configTab then return nil, 'build/config not initialized' end
@@ -310,10 +369,58 @@ function M.set_config(params)
   local input = build.configTab.input or {}
   build.configTab.input = input
   local changed = false
+
+  -- Basic config
   if params.bandit ~= nil then input.bandit = tostring(params.bandit); changed = true end
   if params.pantheonMajorGod ~= nil then input.pantheonMajorGod = tostring(params.pantheonMajorGod); changed = true end
   if params.pantheonMinorGod ~= nil then input.pantheonMinorGod = tostring(params.pantheonMinorGod); changed = true end
   if params.enemyLevel ~= nil then build.configTab.enemyLevel = tonumber(params.enemyLevel) or build.configTab.enemyLevel; changed = true end
+  if params.resistancePenalty ~= nil then input.resistancePenalty = tonumber(params.resistancePenalty); changed = true end
+
+  -- Charges
+  if params.usePowerCharges ~= nil then input.usePowerCharges = params.usePowerCharges; changed = true end
+  if params.useFrenzyCharges ~= nil then input.useFrenzyCharges = params.useFrenzyCharges; changed = true end
+  if params.useEnduranceCharges ~= nil then input.useEnduranceCharges = params.useEnduranceCharges; changed = true end
+  if params.overridePowerCharges ~= nil then input.overridePowerCharges = tonumber(params.overridePowerCharges); changed = true end
+  if params.overrideFrenzyCharges ~= nil then input.overrideFrenzyCharges = tonumber(params.overrideFrenzyCharges); changed = true end
+  if params.overrideEnduranceCharges ~= nil then input.overrideEnduranceCharges = tonumber(params.overrideEnduranceCharges); changed = true end
+
+  -- Combat buffs
+  if params.buffOnslaught ~= nil then input.buffOnslaught = params.buffOnslaught; changed = true end
+  if params.buffFortification ~= nil then input.buffFortification = params.buffFortification; changed = true end
+  if params.overrideFortification ~= nil then input.overrideFortification = tonumber(params.overrideFortification); changed = true end
+  if params.buffTailwind ~= nil then input.buffTailwind = params.buffTailwind; changed = true end
+  if params.buffAdrenaline ~= nil then input.buffAdrenaline = params.buffAdrenaline; changed = true end
+  if params.buffUnholyMight ~= nil then input.buffUnholyMight = params.buffUnholyMight; changed = true end
+  if params.conditionUsingFlask ~= nil then input.conditionUsingFlask = params.conditionUsingFlask; changed = true end
+
+  -- Combat conditions
+  if params.conditionLowLife ~= nil then input.conditionLowLife = params.conditionLowLife; changed = true end
+  if params.conditionFullLife ~= nil then input.conditionFullLife = params.conditionFullLife; changed = true end
+  if params.conditionLowMana ~= nil then input.conditionLowMana = params.conditionLowMana; changed = true end
+  if params.conditionFullMana ~= nil then input.conditionFullMana = params.conditionFullMana; changed = true end
+
+  -- Enemy conditions
+  if params.enemyIsBoss ~= nil then input.enemyIsBoss = tostring(params.enemyIsBoss); changed = true end
+  if params.conditionEnemyIntimidated ~= nil then input.conditionEnemyIntimidated = params.conditionEnemyIntimidated; changed = true end
+  if params.conditionEnemyUnnerved ~= nil then input.conditionEnemyUnnerved = params.conditionEnemyUnnerved; changed = true end
+  if params.conditionEnemyCoveredInAsh ~= nil then input.conditionEnemyCoveredInAsh = params.conditionEnemyCoveredInAsh; changed = true end
+  if params.conditionEnemyCoveredInFrost ~= nil then input.conditionEnemyCoveredInFrost = params.conditionEnemyCoveredInFrost; changed = true end
+  if params.enemyIsChilled ~= nil then input.conditionEnemyChilled = params.enemyIsChilled; changed = true end
+  if params.enemyIsShocked ~= nil then input.conditionEnemyShocked = params.enemyIsShocked; changed = true end
+  if params.enemyIsCrushed ~= nil then input.conditionEnemyCrushed = params.enemyIsCrushed; changed = true end
+  if params.enemyIsBlinded ~= nil then input.conditionEnemyBlinded = params.enemyIsBlinded; changed = true end
+
+  -- Enemy stats overrides
+  if params.enemyFireResist ~= nil then input.enemyFireResist = tonumber(params.enemyFireResist); changed = true end
+  if params.enemyColdResist ~= nil then input.enemyColdResist = tonumber(params.enemyColdResist); changed = true end
+  if params.enemyLightningResist ~= nil then input.enemyLightningResist = tonumber(params.enemyLightningResist); changed = true end
+  if params.enemyChaosResist ~= nil then input.enemyChaosResist = tonumber(params.enemyChaosResist); changed = true end
+  if params.enemyPhysicalDamageReduction ~= nil then input.enemyPhysicalDamageReduction = tonumber(params.enemyPhysicalDamageReduction); changed = true end
+
+  -- Custom modifiers
+  if params.customMods ~= nil then input.customMods = tostring(params.customMods); changed = true end
+
   if changed and build.configTab.BuildModList then build.configTab:BuildModList() end
   M.get_main_output()
   return true
