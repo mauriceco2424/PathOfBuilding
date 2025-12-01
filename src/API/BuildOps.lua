@@ -432,6 +432,7 @@ function M.get_skills()
   if not build or not build.skillsTab or not build.calcsTab then return nil, 'skills not initialized' end
   local groups = {}
   for idx, g in ipairs(build.skillsTab.socketGroupList or {}) do
+    -- Get active skill names from displaySkillList
     local names = {}
     if g.displaySkillList then
       for _, eff in ipairs(g.displaySkillList) do
@@ -440,6 +441,26 @@ function M.get_skills()
         end
       end
     end
+
+    -- Get full gem list (includes both active and support gems)
+    local gemList = {}
+    if g.gemList then
+      for gemIdx, gem in ipairs(g.gemList) do
+        if gem then
+          table.insert(gemList, {
+            index = gemIdx,
+            nameSpec = gem.nameSpec,
+            level = gem.level,
+            quality = gem.quality,
+            qualityId = gem.qualityId,
+            enabled = gem.enabled ~= false,
+            -- Support gem detection: nameSpec ends with " Support" or gem has support tag
+            isSupport = gem.nameSpec and gem.nameSpec:match(" Support$") ~= nil,
+          })
+        end
+      end
+    end
+
     table.insert(groups, {
       index = idx,
       label = g.label,
@@ -448,6 +469,7 @@ function M.get_skills()
       includeInFullDPS = g.includeInFullDPS,
       mainActiveSkill = g.mainActiveSkill,
       skills = names,
+      gemList = gemList,  -- Full gem list with support gems
     })
   end
   local result = {
