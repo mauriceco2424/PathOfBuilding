@@ -447,6 +447,13 @@ function M.get_skills()
     if g.gemList then
       for gemIdx, gem in ipairs(g.gemList) do
         if gem then
+          -- Support gem detection via gemData.grantedEffect.support
+          -- gemData contains the gem definition from Data/Gems.lua which includes grantedEffect
+          -- grantedEffect.support is true for support gems, nil/false for active gems
+          local isSupportGem = false
+          if gem.gemData and gem.gemData.grantedEffect and gem.gemData.grantedEffect.support then
+            isSupportGem = true
+          end
           table.insert(gemList, {
             index = gemIdx,
             nameSpec = gem.nameSpec,
@@ -454,8 +461,7 @@ function M.get_skills()
             quality = gem.quality,
             qualityId = gem.qualityId,
             enabled = gem.enabled ~= false,
-            -- Support gem detection: nameSpec ends with " Support" or gem has support tag
-            isSupport = gem.nameSpec and gem.nameSpec:match(" Support$") ~= nil,
+            isSupport = isSupportGem,
           })
         end
       end
@@ -472,6 +478,7 @@ function M.get_skills()
       gemList = gemList,  -- Full gem list with support gems
     })
   end
+
   local result = {
     mainSocketGroup = build.mainSocketGroup,
     calcsSkillNumber = build.calcsTab.input and build.calcsTab.input.skill_number or nil,
