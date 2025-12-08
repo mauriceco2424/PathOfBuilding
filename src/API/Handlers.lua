@@ -261,6 +261,12 @@ handlers.find_path = function(params)
   return { ok = true, result = res }
 end
 
+handlers.generate_trade_query = function(params)
+  local result, err = BuildOps.generate_trade_query(params or {})
+  if not result then return { ok = false, error = err or 'failed to generate trade query' } end
+  return { ok = true, query = result.query, modWeights = result.modWeights, itemCategory = result.itemCategory, itemCategoryQueryStr = result.itemCategoryQueryStr, currentStatDiff = result.currentStatDiff, minWeight = result.minWeight }
+end
+
 return {
   handlers = handlers,
   version_meta = version_meta,

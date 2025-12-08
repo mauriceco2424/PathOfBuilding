@@ -1180,4 +1180,404 @@ function M.find_path(params)
   }
 end
 
+
+-- Constants for trade query generation
+local MAX_FILTERS = 35
+local DEFAULT_ITEM_AFFIX_QUALITY = 0.5
+local MAX_STAT_INCREASE = 2  -- matches data.misc.maxStatIncrease
+
+-- Slot to category mapping (from TradeQueryGenerator.lua)
+local slotToCategoryMap = {
+  ["Body Armour"] = { queryStr = "armour.chest", category = "Chest" },
+  ["Helmet"] = { queryStr = "armour.helmet", category = "Helmet" },
+  ["Gloves"] = { queryStr = "armour.gloves", category = "Gloves" },
+  ["Boots"] = { queryStr = "armour.boots", category = "Boots" },
+  ["Amulet"] = { queryStr = "accessory.amulet", category = "Amulet" },
+  ["Ring 1"] = { queryStr = "accessory.ring", category = "Ring" },
+  ["Ring 2"] = { queryStr = "accessory.ring", category = "Ring" },
+  ["Ring 3"] = { queryStr = "accessory.ring", category = "Ring" },
+  ["Belt"] = { queryStr = "accessory.belt", category = "Belt" },
+}
+
+-- Weapon type mapping (from TradeQueryGenerator.lua)
+local weaponTypeMap = {
+  ["Shield"] = { queryStr = "armour.shield", category = "Shield" },
+  ["Quiver"] = { queryStr = "armour.quiver", category = "Quiver" },
+  ["Bow"] = { queryStr = "weapon.bow", category = "Bow" },
+  ["Staff"] = { queryStr = "weapon.staff", category = "Staff" },
+  ["Two Handed Sword"] = { queryStr = "weapon.twosword", category = "2HSword" },
+  ["Two Handed Axe"] = { queryStr = "weapon.twoaxe", category = "2HAxe" },
+  ["Two Handed Mace"] = { queryStr = "weapon.twomace", category = "2HMace" },
+  ["Fishing Rod"] = { queryStr = "weapon.rod", category = "FishingRod" },
+  ["One Handed Sword"] = { queryStr = "weapon.onesword", category = "1HSword" },
+  ["Thrusting One Handed Sword"] = { queryStr = "weapon.onesword", category = "1HSword" },
+  ["One Handed Axe"] = { queryStr = "weapon.oneaxe", category = "1HAxe" },
+  ["One Handed Mace"] = { queryStr = "weapon.onemace", category = "1HMace" },
+  ["Sceptre"] = { queryStr = "weapon.onemace", category = "1HMace" },
+  ["Wand"] = { queryStr = "weapon.wand", category = "Wand" },
+  ["Dagger"] = { queryStr = "weapon.dagger", category = "Dagger" },
+  ["Rune Dagger"] = { queryStr = "weapon.dagger", category = "Dagger" },
+  ["Claw"] = { queryStr = "weapon.claw", category = "Claw" },
+}
+
+-- Default base types for each category when no item exists
+local defaultBaseTypes = {
+  ["Chest"] = "Simple Robe",
+  ["Helmet"] = "Iron Hat",
+  ["Gloves"] = "Iron Gauntlets",
+  ["Boots"] = "Iron Greaves",
+  ["Amulet"] = "Coral Amulet",
+  ["Ring"] = "Coral Ring",
+  ["Belt"] = "Chain Belt",
+  ["Shield"] = "Splintered Tower Shield",
+  ["Quiver"] = "Serrated Arrow Quiver",
+  ["Bow"] = "Crude Bow",
+  ["Staff"] = "Gnarled Branch",
+  ["2HSword"] = "Corroded Blade",
+  ["2HAxe"] = "Stone Axe",
+  ["2HMace"] = "Driftwood Club",
+  ["FishingRod"] = "Fishing Rod",
+  ["1HSword"] = "Rusted Sword",
+  ["1HAxe"] = "Rusted Hatchet",
+  ["1HMace"] = "Driftwood Club",
+  ["Wand"] = "Driftwood Wand",
+  ["Dagger"] = "Glass Shank",
+  ["Claw"] = "Nailed Fist",
+  ["1HWeapon"] = "Rusted Sword",
+  ["2HWeapon"] = "Corroded Blade",
+  ["AbyssJewel"] = "Searching Eye Jewel",
+  ["BaseJewel"] = "Cobalt Jewel",
+  ["AnyJewel"] = "Cobalt Jewel",
+  ["Flask"] = "Divine Life Flask",
+}
+
+-- Calculate weighted ratio outputs (ported from TradeQueryGenerator.lua lines 172-199)
+local function weightedRatioOutputs(baseOutput, newOutput, statWeights)
+  local meanStatDiff = 0
+
+  local function ratioModSums(...)
+    local baseModSum = 0
+    local newModSum = 0
+    for _, mod in ipairs({ ... }) do
+      baseModSum = baseModSum + (baseOutput[mod] or 0)
+      newModSum = newModSum + (newOutput[mod] or 0)
+    end
+
+    if baseModSum == math.huge then
+      return 0
+    else
+      if newModSum == math.huge then
+        return MAX_STAT_INCREASE
+      else
+        return math.min(newModSum / ((baseModSum ~= 0) and baseModSum or 1), MAX_STAT_INCREASE)
+      end
+    end
+  end
+
+  for _, statTable in ipairs(statWeights) do
+    if statTable.stat == "FullDPS" and not (baseOutput["FullDPS"] and newOutput["FullDPS"]) then
+      meanStatDiff = meanStatDiff + ratioModSums("TotalDPS", "TotalDotDPS", "CombinedDPS") * statTable.weightMult
+    end
+    meanStatDiff = meanStatDiff + ratioModSums(statTable.stat) * statTable.weightMult
+  end
+
+  return meanStatDiff
+end
+
+-- Determine item category from slot and existing item
+local function getItemCategoryForSlot(slotName, existingItem)
+  local itemCategoryQueryStr = nil
+  local itemCategory = nil
+
+  -- Check simple slot mappings first
+  if slotToCategoryMap[slotName] then
+    return slotToCategoryMap[slotName].queryStr, slotToCategoryMap[slotName].category
+  end
+
+  -- Handle weapon slots dynamically based on equipped item
+  if slotName == "Weapon 1" or slotName == "Weapon 2" then
+    if existingItem and existingItem.type then
+      local mapping = weaponTypeMap[existingItem.type]
+      if mapping then
+        return mapping.queryStr, mapping.category
+      end
+      -- Fallback for generic weapon types
+      if existingItem.type:find("Two Handed") then
+        return "weapon.twomelee", "2HWeapon"
+      elseif existingItem.type:find("One Handed") then
+        return "weapon.one", "1HWeapon"
+      end
+    end
+    -- Default to 1H weapon if no item exists
+    return "weapon.one", "1HWeapon"
+  end
+
+  -- Handle jewel slots
+  if slotName:find("Abyssal") then
+    return "jewel.abyss", "AbyssJewel"
+  elseif slotName:find("Jewel") then
+    return "jewel.base", "BaseJewel"
+  end
+
+  -- Handle flask slots
+  if slotName:find("Flask") then
+    return "flask", "Flask"
+  end
+
+  return nil, nil
+end
+
+-- Generate weighted trade query for a slot
+-- params: { slotName: string, statWeights?: [{stat: string, weightMult: number}], options?: {includeCorrupted?, includeImplicit?, includeEldritch?, includeScourge?, includeSynthesis?} }
+function M.generate_trade_query(params)
+  if not build or not build.itemsTab or not build.calcsTab then
+    return nil, 'build not initialized'
+  end
+  if type(params) ~= 'table' or type(params.slotName) ~= 'string' then
+    return nil, 'missing or invalid slotName'
+  end
+
+  local slotName = params.slotName
+  local slot = build.itemsTab.slots[slotName]
+  if not slot then
+    return nil, 'slot not found: ' .. slotName
+  end
+
+  -- Default stat weights if not provided
+  local statWeights = params.statWeights or {
+    { stat = "FullDPS", weightMult = 1.0 }
+  }
+
+  -- Options for which mod types to include
+  local options = params.options or {}
+  local includeExplicit = options.includeExplicit ~= false  -- default true
+  local includeImplicit = options.includeImplicit ~= false  -- default true
+  local includeCorrupted = options.includeCorrupted == true  -- default false
+  local includeEldritch = options.includeEldritch == true    -- default false
+  local includeScourge = options.includeScourge == true      -- default false
+  local includeSynthesis = options.includeSynthesis == true  -- default false
+
+  -- Figure out what type of item we're searching for
+  local existingItem = build.itemsTab.items[slot.selItemId]
+  local itemCategoryQueryStr, itemCategory = getItemCategoryForSlot(slotName, existingItem)
+
+  if not itemCategory then
+    return nil, 'unsupported slot type: ' .. slotName
+  end
+
+  -- Determine base type for test item
+  local testItemType = existingItem and existingItem.baseName or defaultBaseTypes[itemCategory] or "Coral Amulet"
+
+  -- Create a temp item for the slot with no mods
+  local itemRawStr = "Rarity: RARE\nStat Tester\n" .. testItemType
+  local testItem = new("Item", itemRawStr)
+  if not testItem or not testItem.baseName then
+    return nil, 'failed to create test item for base: ' .. testItemType
+  end
+
+  -- Calculate base output with a blank item
+  local calcFunc, baseOutput = build.calcsTab:GetMiscCalculator()
+  if not calcFunc then
+    return nil, 'failed to get calculator'
+  end
+
+  local baseItemOutput = calcFunc({ repSlotName = slotName, repItem = testItem })
+  -- Make weights more human readable
+  local baseStatValue = weightedRatioOutputs(baseOutput, baseItemOutput, statWeights) * 1000
+
+  -- Load mod data from QueryMods.lua
+  local modData = nil
+  local ok, loaded = pcall(LoadModule, "Data/QueryMods.lua")
+  if ok and loaded then
+    modData = loaded
+  else
+    -- Try alternative path
+    ok, loaded = pcall(dofile, "Data/QueryMods.lua")
+    if ok and loaded then
+      modData = loaded
+    else
+      return nil, 'failed to load QueryMods.lua'
+    end
+  end
+
+  -- Test each mod one at a time and cache the normalized stat diff to use as weight
+  local modWeights = {}
+  local alreadyWeightedMods = {}
+
+  -- Function to generate mod weights for a mod type
+  local function generateModWeights(modType)
+    local modsToTest = modData[modType]
+    if not modsToTest then return end
+
+    for _, entry in pairs(modsToTest) do
+      -- Skip if this mod doesn't apply to this item category
+      if entry[itemCategory] == nil then
+        goto continue
+      end
+
+      -- Don't calculate the same thing twice (can happen with corrupted vs implicit)
+      if entry.tradeMod and alreadyWeightedMods[entry.tradeMod.id] then
+        goto continue
+      end
+
+      -- Skip if no tradeMod data
+      if not entry.tradeMod or not entry.tradeMod.text then
+        goto continue
+      end
+
+      -- Test with a value halfway between the min and max available for this mod
+      local modRange = entry[itemCategory]
+      local modValue = math.ceil((modRange.max - modRange.min) * DEFAULT_ITEM_AFFIX_QUALITY + modRange.min)
+      local modValueStr = (entry.sign and entry.sign or "") .. tostring(modValue)
+
+      -- Apply override text for special cases
+      local modLine
+      if modValue == 1 and entry.specialCaseData and entry.specialCaseData.overrideModLineSingular then
+        modLine = entry.specialCaseData.overrideModLineSingular
+      elseif entry.specialCaseData and entry.specialCaseData.overrideModLine then
+        modLine = entry.specialCaseData.overrideModLine
+      else
+        modLine = entry.tradeMod.text
+      end
+      modLine = modLine:gsub("#", modValueStr)
+
+      -- Apply mod to test item
+      testItem.explicitModLines[1] = { line = modLine, custom = true }
+      testItem:BuildAndParseRaw()
+
+      -- Skip if parsing failed
+      if (testItem.modList and #testItem.modList == 0) or
+         (testItem.slotModList and #testItem.slotModList[1] == 0 and #testItem.slotModList[2] == 0) then
+        goto continue
+      end
+
+      -- Calculate with this mod
+      local output = calcFunc({ repSlotName = slotName, repItem = testItem })
+      local meanStatDiff = weightedRatioOutputs(baseOutput, output, statWeights) * 1000 - baseStatValue
+
+      if meanStatDiff > 0.01 then
+        table.insert(modWeights, {
+          tradeModId = entry.tradeMod.id,
+          weight = meanStatDiff / modValue,
+          meanStatDiff = meanStatDiff,
+          invert = entry.sign == "-" and true or false
+        })
+      end
+      alreadyWeightedMods[entry.tradeMod.id] = true
+
+      ::continue::
+    end
+  end
+
+  -- Generate weights for each enabled mod type (NO coroutine.yield - run synchronously)
+  if includeExplicit then
+    generateModWeights("Explicit")
+  end
+  if includeImplicit then
+    generateModWeights("Implicit")
+  end
+  if includeCorrupted then
+    generateModWeights("Corrupted")
+  end
+  if includeEldritch then
+    generateModWeights("Eater")
+    generateModWeights("Exarch")
+  end
+  if includeScourge then
+    generateModWeights("Scourge")
+  end
+  if includeSynthesis then
+    generateModWeights("Synthesis")
+  end
+
+  -- Calc original item stats without anoint or enchant, and use that diff as a basis for default min sum
+  local currentStatDiff = 0
+  if existingItem then
+    testItem.explicitModLines = {}
+    if existingItem.explicitModLines then
+      for _, modLine in ipairs(existingItem.explicitModLines) do
+        table.insert(testItem.explicitModLines, modLine)
+      end
+    end
+    if existingItem.scourgeModLines then
+      for _, modLine in ipairs(existingItem.scourgeModLines) do
+        table.insert(testItem.explicitModLines, modLine)
+      end
+    end
+    if existingItem.implicitModLines then
+      for _, modLine in ipairs(existingItem.implicitModLines) do
+        table.insert(testItem.explicitModLines, modLine)
+      end
+    end
+    if existingItem.crucibleModLines then
+      for _, modLine in ipairs(existingItem.crucibleModLines) do
+        table.insert(testItem.explicitModLines, modLine)
+      end
+    end
+    testItem:BuildAndParseRaw()
+
+    local originalOutput = calcFunc({ repSlotName = slotName, repItem = testItem })
+    currentStatDiff = weightedRatioOutputs(baseOutput, originalOutput, statWeights) * 1000 - baseStatValue
+  end
+
+  -- Sort by mean stat diff rather than weight to more accurately prioritize stats that can contribute more
+  table.sort(modWeights, function(a, b)
+    return a.meanStatDiff > b.meanStatDiff
+  end)
+
+  -- This stat diff value will generally be higher than the weighted sum of the same item,
+  -- because the stats are all applied at once and can thus multiply off each other.
+  -- So apply a modifier to get a reasonable min and hopefully approximate that the query will start with small upgrades.
+  local minWeight = currentStatDiff * 0.5
+
+  -- Generate trade query table
+  local queryTable = {
+    query = {
+      filters = {
+        type_filters = {
+          filters = {
+            category = { option = itemCategoryQueryStr },
+            rarity = { option = "nonunique" }
+          }
+        }
+      },
+      status = { option = "online" },
+      stats = {
+        {
+          type = "weight",
+          value = { min = minWeight },
+          filters = {}
+        }
+      }
+    },
+    sort = { ["statgroup.0"] = "desc" },
+    engine = "new"
+  }
+
+  -- Add mod weights to query (limited to MAX_FILTERS)
+  local filters = 0
+  for _, entry in ipairs(modWeights) do
+    if filters >= MAX_FILTERS then break end
+    table.insert(queryTable.query.stats[1].filters, {
+      id = entry.tradeModId,
+      value = { weight = entry.invert and (entry.weight * -1) or entry.weight }
+    })
+    filters = filters + 1
+  end
+
+  -- Handle no mods found case
+  if #queryTable.query.stats[1].filters == 0 then
+    return nil, 'could not generate search, found no mods to search for'
+  end
+
+  return {
+    query = queryTable,
+    modWeights = modWeights,
+    itemCategory = itemCategory,
+    itemCategoryQueryStr = itemCategoryQueryStr,
+    currentStatDiff = currentStatDiff,
+    minWeight = minWeight
+  }
+end
+
 return M
