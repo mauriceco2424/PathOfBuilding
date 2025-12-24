@@ -561,6 +561,8 @@ end
 -- Helper to extract mod line data for JSON serialization
 local function extractModLine(modLine)
   if not modLine then return nil end
+  -- Skip mods with nil or empty text - these are corrupted
+  if not modLine.line or modLine.line == "" then return nil end
   local entry = {
     line = modLine.line,
     range = modLine.range,

@@ -1053,6 +1053,10 @@ function ItemClass:BuildRaw()
 	end
 	local function writeModLine(modLine)
 		local line = modLine.line
+		-- Skip mods with nil or empty text to prevent malformed output
+		if not line or line == "" then
+			return
+		end
 		if modLine.range and line:match("%(%-?[%d%.]+%-%-?[%d%.]+%)") then
 			line = "{range:" .. round(modLine.range, 3) .. "}" .. line
 		end
