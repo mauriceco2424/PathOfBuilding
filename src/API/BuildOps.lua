@@ -1582,4 +1582,40 @@ function M.generate_trade_query(params)
   }
 end
 
+-- Get aggregated stats from passive tree only
+-- Uses source filtering to extract tree-specific modifiers
+function M.get_tree_stats()
+  if not build or not build.calcsTab then
+    return nil, "build not initialized"
+  end
+  if build.calcsTab.BuildOutput then
+    build.calcsTab:BuildOutput()
+  end
+  local modDB = build.calcsTab.mainEnv.modDB
+  local cfg = { source = "Tree" }
+
+  local result = {
+    -- EHP Contributors (most impactful)
+    lifeInc = modDB:Sum("INC", cfg, "Life") or 0,
+    esInc = modDB:Sum("INC", cfg, "EnergyShield") or 0,
+    armourInc = modDB:Sum("INC", cfg, "Armour", "ArmourAndEvasion", "Defences") or 0,
+    evasionInc = modDB:Sum("INC", cfg, "Evasion", "ArmourAndEvasion", "Defences") or 0,
+    blockBase = modDB:Sum("BASE", cfg, "BlockChance") or 0,
+    spellSuppressBase = modDB:Sum("BASE", cfg, "SpellSuppressionChance") or 0,
+    -- Attributes (affects both offense/defense)
+    strBase = modDB:Sum("BASE", cfg, "Str") or 0,
+    dexBase = modDB:Sum("BASE", cfg, "Dex") or 0,
+    intBase = modDB:Sum("BASE", cfg, "Int") or 0,
+    -- DPS Contributors (generic + crit)
+    damageInc = modDB:Sum("INC", cfg, "Damage") or 0,
+    critChanceInc = modDB:Sum("INC", cfg, "CritChance") or 0,
+    critMultiBase = modDB:Sum("BASE", cfg, "CritMultiplier") or 0,
+    dotMultiBase = modDB:Sum("BASE", cfg, "DotMultiplier") or 0,
+    -- Speed (affects DPS directly)
+    attackSpeedInc = modDB:Sum("INC", cfg, "Speed", "AttackSpeed") or 0,
+    castSpeedInc = modDB:Sum("INC", cfg, "Speed", "CastSpeed") or 0,
+  }
+  return result
+end
+
 return M

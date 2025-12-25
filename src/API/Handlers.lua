@@ -267,6 +267,12 @@ handlers.generate_trade_query = function(params)
   return { ok = true, query = result.query, modWeights = result.modWeights, itemCategory = result.itemCategory, itemCategoryQueryStr = result.itemCategoryQueryStr, currentStatDiff = result.currentStatDiff, minWeight = result.minWeight }
 end
 
+handlers.get_tree_stats = function(params)
+  local stats, err = BuildOps.get_tree_stats()
+  if not stats then return { ok = false, error = err } end
+  return { ok = true, treeStats = stats }
+end
+
 return {
   handlers = handlers,
   version_meta = version_meta,
