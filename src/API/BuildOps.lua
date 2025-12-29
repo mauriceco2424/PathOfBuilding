@@ -666,7 +666,14 @@ function M.get_items()
         if it.implicitModLines then
           for _, modLine in ipairs(it.implicitModLines) do
             local mod = extractModLine(modLine)
-            if mod then table.insert(entry.implicitMods, mod) end
+            if mod then
+              table.insert(entry.implicitMods, mod)
+            else
+              -- Debug: Log skipped mods for unique items
+              if it.rarity == "UNIQUE" then
+                print("[BuildOps] Skipped implicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
+              end
+            end
           end
         end
 
@@ -674,7 +681,14 @@ function M.get_items()
         if it.explicitModLines then
           for _, modLine in ipairs(it.explicitModLines) do
             local mod = extractModLine(modLine)
-            if mod then table.insert(entry.explicitMods, mod) end
+            if mod then
+              table.insert(entry.explicitMods, mod)
+            else
+              -- Debug: Log skipped mods for unique items
+              if it.rarity == "UNIQUE" then
+                print("[BuildOps] Skipped explicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
+              end
+            end
           end
         end
 
