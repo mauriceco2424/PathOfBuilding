@@ -273,6 +273,12 @@ handlers.get_tree_stats = function(params)
   return { ok = true, treeStats = stats }
 end
 
+handlers.set_skill_config = function(params)
+  local res, err = BuildOps.set_skill_config(params or {})
+  if not res then return { ok = false, error = err or 'failed to set skill config' } end
+  return { ok = true, varName = res.varName, value = res.value }
+end
+
 return {
   handlers = handlers,
   version_meta = version_meta,

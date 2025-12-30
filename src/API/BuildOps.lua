@@ -1596,6 +1596,38 @@ function M.generate_trade_query(params)
   }
 end
 
+-- Set arbitrary skill-specific config input variable by name
+-- params: { varName: string, value: any }
+-- This is a generic setter that allows setting ANY config variable from ConfigOptions.lua
+function M.set_skill_config(params)
+  if not build or not build.configTab then
+    return nil, 'build/config not initialized'
+  end
+  if type(params) ~= 'table' then
+    return nil, 'invalid params: expected table'
+  end
+  if type(params.varName) ~= 'string' or params.varName == '' then
+    return nil, 'missing or invalid varName: expected non-empty string'
+  end
+  if params.value == nil then
+    return nil, 'missing value parameter'
+  end
+
+  local input = build.configTab.input or {}
+  build.configTab.input = input
+
+  -- Set the config variable directly
+  input[params.varName] = params.value
+
+  -- Rebuild mod list and recalculate
+  if build.configTab.BuildModList then
+    build.configTab:BuildModList()
+  end
+  M.get_main_output()
+
+  return { ok = true, varName = params.varName, value = params.value }
+end
+
 -- Get aggregated stats from passive tree only
 -- Uses source filtering to extract tree-specific modifiers
 function M.get_tree_stats()
