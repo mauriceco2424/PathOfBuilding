@@ -189,9 +189,9 @@ handlers.update_tree_delta = function(params)
 end
 
 handlers.calc_with = function(params)
-  local out, base = BuildOps.calc_with(params or {})
-  if not out then return { ok = false, error = base } end
-  return { ok = true, output = out }
+  local result, err = BuildOps.calc_with(params or {})
+  if not result then return { ok = false, error = err } end
+  return { ok = true, output = result.output, baseOutput = result.baseOutput }
 end
 
 handlers.get_config = function(params)

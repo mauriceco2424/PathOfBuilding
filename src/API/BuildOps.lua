@@ -268,6 +268,7 @@ end
 
 -- Calculate what-if scenario without persisting changes
 -- params: { addNodes?: number[], removeNodes?: number[], useFullDPS?: boolean }
+-- Returns: { output = {...}, baseOutput = {...} } or nil, error
 function M.calc_with(params)
   if not build or not build.calcsTab then return nil, 'build not initialized' end
   local calcFunc, baseOut = build.calcsTab:GetMiscCalculator()
@@ -287,7 +288,11 @@ function M.calc_with(params)
     end
   end
   local out = calcFunc(override, params and params.useFullDPS)
-  return out, baseOut
+  -- Use deepCopySafe to strip circular references and non-serializable values
+  return {
+    output = deepCopySafe(out),
+    baseOutput = deepCopySafe(baseOut),
+  }
 end
 
 
