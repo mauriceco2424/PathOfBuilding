@@ -459,6 +459,47 @@ function M.get_skills()
           if gem.gemData and gem.gemData.grantedEffect and gem.gemData.grantedEffect.support then
             isSupportGem = true
           end
+
+          -- Extract skill type and tags from gemData for categorization
+          -- Priority order: aura > herald > guard > warcry > movement > minion > totem > trap > mine > attack > spell
+          local skillType = nil
+          local gemTags = {}
+          local tagString = nil
+          if gem.gemData then
+            local tags = gem.gemData.tags or {}
+            tagString = gem.gemData.tagString
+            -- Copy tags for JSON serialization
+            for k, v in pairs(tags) do
+              if v == true then
+                gemTags[k] = true
+              end
+            end
+            -- Determine primary skill type from tags (priority order)
+            if tags.aura then
+              skillType = 'aura'
+            elseif tags.herald then
+              skillType = 'herald'
+            elseif tags.guard then
+              skillType = 'guard'
+            elseif tags.warcry then
+              skillType = 'warcry'
+            elseif tags.movement then
+              skillType = 'movement'
+            elseif tags.minion then
+              skillType = 'minion'
+            elseif tags.totem then
+              skillType = 'totem'
+            elseif tags.trap then
+              skillType = 'trap'
+            elseif tags.mine then
+              skillType = 'mine'
+            elseif tags.attack then
+              skillType = 'attack'
+            elseif tags.spell then
+              skillType = 'spell'
+            end
+          end
+
           table.insert(gemList, {
             index = gemIdx,
             nameSpec = gem.nameSpec,
@@ -467,6 +508,9 @@ function M.get_skills()
             qualityId = gem.qualityId,
             enabled = gem.enabled ~= false,
             isSupport = isSupportGem,
+            skillType = skillType,
+            tags = gemTags,
+            tagString = tagString,
           })
         end
       end
