@@ -460,6 +460,18 @@ function M.get_skills()
             isSupportGem = true
           end
 
+          -- Check for dual-nature gems like Autoexertion that have both active and support effects
+          -- secondaryGrantedEffect is a separate support effect that triggers on other skills
+          local hasSecondarySupport = false
+          local secondarySupportName = nil
+          if gem.gemData and gem.gemData.secondaryGrantedEffect then
+            local secondary = gem.gemData.secondaryGrantedEffect
+            if secondary.support then
+              hasSecondarySupport = true
+              secondarySupportName = secondary.name or gem.gemData.secondaryEffectName
+            end
+          end
+
           -- Extract skill type and tags from gemData for categorization
           -- Priority order: aura > herald > guard > warcry > movement > minion > totem > trap > mine > attack > spell
           local skillType = nil
@@ -511,6 +523,9 @@ function M.get_skills()
             skillType = skillType,
             tags = gemTags,
             tagString = tagString,
+            -- Dual-nature gem support (e.g., Autoexertion has both active warcry and support effect)
+            hasSecondarySupport = hasSecondarySupport or nil,  -- nil if false to keep JSON clean
+            secondarySupportName = secondarySupportName,
           })
         end
       end
