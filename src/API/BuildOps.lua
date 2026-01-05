@@ -296,6 +296,134 @@ function M.calc_with(params)
 end
 
 
+-- Calculate what-if scenario with gem changes without persisting
+-- params: {
+--   addGems?: { groupIndex: number, gem: { skillId: string, level?: number, quality?: number, qualityId?: string } }[],
+--   removeGems?: { groupIndex: number, gemIndex: number }[],
+--   replaceGems?: { groupIndex: number, gemIndex: number, gem: { skillId: string, level?: number, quality?: number, qualityId?: string } }[],
+--   useFullDPS?: boolean
+-- }
+-- Returns: { output = {...}, baseOutput = {...} } or nil, error
+function M.calc_with_gems(params)
+  if not build or not build.skillsTab then return nil, 'build not initialized' end
+
+  -- 1. Deep clone socket groups
+  local originalGroups = {}
+  for i, group in ipairs(build.skillsTab.socketGroupList) do
+    originalGroups[i] = deepCopySafe(group)
+  end
+
+  -- 2. Apply gem modifications to LIVE state
+  local modified = false
+
+  -- Handle removeGems (do first to handle indices correctly)
+  if params and type(params.removeGems) == 'table' then
+    -- Sort by gemIndex descending so removals don't shift indices
+    table.sort(params.removeGems, function(a, b) return a.gemIndex > b.gemIndex end)
+    for _, removal in ipairs(params.removeGems) do
+      local group = build.skillsTab.socketGroupList[removal.groupIndex]
+      if group and group.gemList and group.gemList[removal.gemIndex] then
+        table.remove(group.gemList, removal.gemIndex)
+        modified = true
+      end
+    end
+  end
+
+  -- Helper to find gem data by name (same pattern as add_gem)
+  local function findGemByName(gemName)
+    if not build.data or not build.data.gems then return nil end
+    for _, gemData in pairs(build.data.gems) do
+      if gemData.name == gemName or gemData.nameSpec == gemName then
+        return gemData
+      end
+    end
+    return nil
+  end
+
+  -- Handle replaceGems
+  if params and type(params.replaceGems) == 'table' then
+    for _, replace in ipairs(params.replaceGems) do
+      local group = build.skillsTab.socketGroupList[replace.groupIndex]
+      if group and group.gemList and group.gemList[replace.gemIndex] and replace.gem then
+        local gemData = findGemByName(replace.gem.skillId)
+        if gemData then
+          local gemInstance = group.gemList[replace.gemIndex]
+          gemInstance.nameSpec = gemData.name
+          gemInstance.gemId = gemData.id
+          gemInstance.skillId = gemData.grantedEffect and gemData.grantedEffect.id or gemData.grantedEffectId
+          gemInstance.gemData = gemData
+          gemInstance.level = replace.gem.level or gemData.naturalMaxLevel or 20
+          gemInstance.quality = replace.gem.quality or 0
+          gemInstance.qualityId = replace.gem.qualityId or "Default"
+          modified = true
+        end
+      end
+    end
+  end
+
+  -- Handle addGems
+  if params and type(params.addGems) == 'table' then
+    for _, addition in ipairs(params.addGems) do
+      local group = build.skillsTab.socketGroupList[addition.groupIndex]
+      if group and addition.gem then
+        local gemData = findGemByName(addition.gem.skillId)
+        if gemData then
+          if not group.gemList then group.gemList = {} end
+          table.insert(group.gemList, {
+            nameSpec = gemData.name,
+            gemId = gemData.id,
+            skillId = gemData.grantedEffect and gemData.grantedEffect.id or gemData.grantedEffectId,
+            gemData = gemData,
+            level = addition.gem.level or gemData.naturalMaxLevel or 20,
+            quality = addition.gem.quality or 0,
+            qualityId = addition.gem.qualityId or "Default",
+            enabled = true,
+            enableGlobal1 = true,
+            enableGlobal2 = true,
+            count = 1,
+          })
+          modified = true
+        end
+      end
+    end
+  end
+
+  -- 3. Reprocess socket groups if modified
+  if modified then
+    for _, group in ipairs(build.skillsTab.socketGroupList) do
+      if build.skillsTab.ProcessSocketGroup then
+        build.skillsTab:ProcessSocketGroup(group)
+      end
+    end
+  end
+
+  -- 4. Get calculator and run
+  local calcFunc, baseOut = build.calcsTab:GetMiscCalculator()
+  local out = calcFunc(nil, params and params.useFullDPS)
+
+  -- 5. Restore original socket groups
+  for i, group in ipairs(originalGroups) do
+    build.skillsTab.socketGroupList[i] = group
+  end
+  -- Remove any extra groups added
+  while #build.skillsTab.socketGroupList > #originalGroups do
+    table.remove(build.skillsTab.socketGroupList)
+  end
+
+  -- 6. Reprocess to restore original state
+  for _, group in ipairs(build.skillsTab.socketGroupList) do
+    if build.skillsTab.ProcessSocketGroup then
+      build.skillsTab:ProcessSocketGroup(group)
+    end
+  end
+
+  return {
+    output = deepCopySafe(out),
+    baseOutput = deepCopySafe(baseOut),
+  }
+end
+
+
 -- Get basic config values
 function M.get_config()
   if not build or not build.configTab then return nil, 'build/config not initialized' end
