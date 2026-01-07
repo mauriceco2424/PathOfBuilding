@@ -2,6 +2,9 @@
 -- This wrapper allows the program to run headless on any OS (in theory)
 -- It can be run using a standard lua interpreter, although LuaJIT is preferable
 
+-- Load LibDeflate for compression/decompression support
+local scriptDir = arg[0]:match("(.*/)")  or "./"
+local LibDeflate = dofile(scriptDir .. "LibDeflate.lua")
 
 -- Callbacks
 local callbackTable = { }
@@ -72,7 +75,30 @@ function GetAsyncCount()
 end
 
 -- Search Handles
-function NewFileSearch() end
+function NewFileSearch(pattern, dirOnly)
+	-- Basic implementation for file existence checks
+	-- Simplified version that checks if a single file exists
+	if not pattern then return nil end
+
+	-- Extract the path from pattern (remove wildcards)
+	local path = pattern:gsub("[*].*$", "")
+
+	-- Try to open the file
+	local file = io.open(path, "r")
+	if file then
+		file:close()
+		local fileName = path:match("[^/]+$") or path
+
+		-- Return a simple file search handle
+		return {
+			GetFileName = function() return fileName end,
+			GetFileModifiedTime = function() return os.time() end,
+			NextFile = function() return nil end  -- Only returns first match
+		}
+	end
+
+	return nil
+end
 
 -- General Functions
 function SetWindowTitle(title) end
@@ -85,18 +111,31 @@ function IsKeyDown(keyName) end
 function Copy(text) end
 function Paste() end
 function Deflate(data)
-	-- TODO: Might need this
-	return ""
+	-- Use LibDeflate to compress data with zlib format
+	if not data or #data == 0 then
+		return ""
+	end
+	local compressed = LibDeflate:CompressZlib(data)
+	return compressed or ""
 end
+
 function Inflate(data)
-	-- TODO: And this
-	return ""
+	-- Use LibDeflate to decompress zlib-compressed data
+	if not data or #data == 0 then
+		return ""
+	end
+	local decompressed = LibDeflate:DecompressZlib(data)
+	return decompressed or ""
 end
+
 function GetTime()
 	return 0
 end
+
 function GetScriptPath()
-	return ""
+	-- Return the script directory path
+	-- In Docker container, this is /app/src
+	return scriptDir or "/app/src/"
 end
 function GetRuntimePath()
 	return ""
@@ -166,12 +205,133 @@ function require(name)
 	return l_require(name)
 end
 
+-- Determine script directory for robust relative loading
+local function get_script_dir()
+  local info = debug and debug.getinfo and debug.getinfo(1, 'S')
+  local src = info and info.source or ''
+  if type(src) == 'string' and src:sub(1,1) == '@' then
+    local path = src:sub(2)
+    return (path:gsub('[^/\\]+$', '')):gsub('[ /\\]$', '')
+  end
+  return ''
+end
+local POB_SCRIPT_DIR = get_script_dir()
+-- If script dir unknown (e.g., launched as 'luajit HeadlessWrapper.lua'), fall back:
+if POB_SCRIPT_DIR == '' then
+  -- Case 1: running inside src
+  local f1 = io.open('HeadlessWrapper.lua', 'r')
+  if f1 then f1:close(); POB_SCRIPT_DIR = '.' end
+end
+if POB_SCRIPT_DIR == '' then
+  -- Case 2: running from repo root
+  local f2 = io.open('src/HeadlessWrapper.lua', 'r')
+  if f2 then f2:close(); POB_SCRIPT_DIR = 'src' end
+end
+if POB_SCRIPT_DIR ~= '' then
+  _G.POB_SCRIPT_DIR = POB_SCRIPT_DIR
+  local pathSegs = {}
+  table.insert(pathSegs, POB_SCRIPT_DIR .. '/?.lua')
+  table.insert(pathSegs, POB_SCRIPT_DIR .. '/?/init.lua')
+  table.insert(pathSegs, package.path)
+  package.path = table.concat(pathSegs, ';')
+  -- Add runtime lua path so modules like 'xml' resolve without external LUA_PATH
+  local runtimeCandidates = {
+    POB_SCRIPT_DIR .. '/runtime/lua',
+    POB_SCRIPT_DIR .. '/../runtime/lua',
+    'runtime/lua',
+    '../runtime/lua',
+  }
+  for _, rp in ipairs(runtimeCandidates) do
+    local test = io.open(rp .. '/xml.lua', 'r')
+    if test then
+      test:close()
+      local seg = rp .. '/?.lua;"' .. rp .. '/?/init.lua"'
+      if not string.find(package.path, rp .. '/?.lua', 1, true) then
+        package.path = rp .. '/?.lua;' .. rp .. '/?/init.lua;' .. package.path
+      end
+      break
+    end
+  end
+end
 
+-- Allow CLI flag in addition to env var to start stdio server
+local function has_flag(flag)
+  if type(arg) ~= 'table' then return false end
+  for i = 1, #arg do if arg[i] == flag then return true end end
+  return false
+end
+
+-- If requested, start the stdio server immediately and exit
+if os.getenv('POB_API_STDIO') == '1' or has_flag('--stdio') then
+  -- Provide utf8 fallback if not present to avoid requiring external luautf8
+  if type(_G.utf8) ~= 'table' then
+    local ok_u, mod = pcall(require, 'utf8')
+    if not ok_u or type(mod) ~= 'table' then
+      local stubCandidates = {
+        (POB_SCRIPT_DIR ~= '' and (POB_SCRIPT_DIR .. '/utf8.lua')) or nil,
+        (POB_SCRIPT_DIR ~= '' and (POB_SCRIPT_DIR .. '/lua-utf8.lua')) or nil,
+        'src/utf8.lua', 'src/lua-utf8.lua'
+      }
+      for _, sp in ipairs(stubCandidates) do
+        if sp then
+          local ok2, stub = pcall(dofile, sp)
+          if ok2 and type(stub) == 'table' then _G.utf8 = stub; break end
+        end
+      end
+    else
+      _G.utf8 = mod
+    end
+  end
+  -- Load Launch.lua first to initialize mainObject and build system
+  dofile("Launch.lua")
+
+  -- Initialize the build system (same as non-STDIO mode)
+  mainObject.continuousIntegrationMode = os.getenv("CI")
+  runCallback("OnInit")
+  runCallback("OnFrame") -- Need at least one frame for everything to initialise
+
+  if mainObject.promptMsg then
+    -- Something went wrong during startup
+    io.stderr:write('[HeadlessWrapper] Error during init: ' .. tostring(mainObject.promptMsg) .. '\n')
+    error(mainObject.promptMsg)
+  end
+
+  -- Set up helper functions
+  function newBuild()
+    mainObject.main:SetMode("BUILD", false, "Help, I'm stuck in Path of Building!")
+    runCallback("OnFrame")
+  end
+  function loadBuildFromXML(xmlText, name)
+    mainObject.main:SetMode("BUILD", false, name or "", xmlText)
+    runCallback("OnFrame")
+  end
+  _G.newBuild = newBuild
+  _G.loadBuildFromXML = loadBuildFromXML
+  _G.build = mainObject.main.modes["BUILD"]
+
+  -- Now start the API server
+  local srvPath = (POB_SCRIPT_DIR ~= '' and (POB_SCRIPT_DIR .. '/API/Server.lua')) or 'API/Server.lua'
+  dofile(srvPath)
+  return
+end
+
+-- Add PoB runtime lua path for external luajit runs
+do
+  local candidates = { "../runtime/lua", "runtime/lua", "../../runtime/lua" }
+  for _, p in ipairs(candidates) do
+    local f = io.open(p .. "/xml.lua", "r")
+    if f then f:close()
+      if not string.find(package.path, p .. "/?.lua", 1, true) then
+        package.path = package.path .. ";" .. p .. "/?.lua"
+      end
+    end
+  end
+end
 dofile("Launch.lua")
 
 -- Prevents loading of ModCache
 -- Allows running mod parsing related tests without pushing ModCache
--- The CI env var will be true when run from github workflows but should be false for other tools using the headless wrapper 
+-- The CI env var will be true when run from github workflows but should be false for other tools using the headless wrapper
 mainObject.continuousIntegrationMode = os.getenv("CI")
 
 runCallback("OnInit")
@@ -203,4 +363,11 @@ function loadBuildFromJSON(getItemsJSON, getPassiveSkillsJSON)
 	build.importTab:ImportPassiveTreeAndJewels(getPassiveSkillsJSON, charData)
 	-- You now have a build without a correct main skill selected, or any configuration options set
 	-- Good luck!
+end
+
+-- API server integration (env-gated)
+-- Set POB_API_STDIO=1 to start the stdio JSON-RPC server and exit
+if os.getenv('POB_API_STDIO') == '1' then
+  dofile('API/Server.lua')
+  return
 end

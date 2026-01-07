@@ -81,7 +81,8 @@ function buildMode:Init(dbFileName, buildName, buildXML, convertBuild, importLin
 	self.pantheonMinorGod = "None"
 	self.characterLevelAutoMode = main.defaultCharLevel == 1 or main.defaultCharLevel == nil
 	if buildXML then
-		if self:LoadDB(buildXML, "Unnamed build") then
+		local loadResult = self:LoadDB(buildXML, "Unnamed build")
+		if loadResult then
 			self:CloseBuild()
 			return
 		end
@@ -923,6 +924,9 @@ function buildMode:Load(xml, fileName)
 		self.viewMode = xml.attrib.viewMode
 	end
 	self.characterLevel = tonumber(xml.attrib.level) or 1
+	-- Store className/ascendClassName for fallback in PassiveSpec:Load when tree has no data
+	self.xmlClassName = xml.attrib.className
+	self.xmlAscendClassName = xml.attrib.ascendClassName
 	self.characterLevelAutoMode = xml.attrib.characterLevelAutoMode == "true"
 	for _, diff in pairs({ "bandit", "pantheonMajorGod", "pantheonMinorGod" }) do
 		self[diff] = xml.attrib[diff] or "None"
@@ -1883,10 +1887,12 @@ function buildMode:SaveDB(fileName)
 	end
 
 	-- Call on all savers to save their data in their respective sections
-	for elem, saver in pairs(self.savers) do
-		local node = { elem = elem }
-		saver:Save(node)
-		t_insert(dbXML, node)
+	if self.savers then
+		for elem, saver in pairs(self.savers) do
+			local node = { elem = elem }
+			saver:Save(node)
+			t_insert(dbXML, node)
+		end
 	end
 
 	-- Compose the XML

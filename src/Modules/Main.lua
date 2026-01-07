@@ -274,6 +274,7 @@ the "Releases" section of the GitHub page.]])
 			end
 		end
 	end
+
 end
 
 function main:DetectUnicodeSupport()
