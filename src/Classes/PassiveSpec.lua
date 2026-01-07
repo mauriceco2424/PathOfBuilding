@@ -90,11 +90,11 @@ function PassiveSpecClass:Load(xml, dbFileName)
 		if type(node) == "table" then
 			if node.elem == "URL" then
 				-- Legacy format
-				if type(node[1]) ~= "string" then
-					launch:ShowErrMsg("^1Error parsing '%s': 'URL' element missing content", dbFileName)
-					return true
+				if type(node[1]) == "string" and node[1]:match("%S") then
+					-- Only use URL if it has non-whitespace content
+					url = node[1]
 				end
-				url = node[1]
+				-- Empty URL elements are ignored (no error, just skip)
 			elseif node.elem == "Sockets" then
 				for _, child in ipairs(node) do
 					if child.elem == "Socket" then
@@ -119,13 +119,35 @@ function PassiveSpecClass:Load(xml, dbFileName)
 	end
 	if xml.attrib.nodes then
 		-- New format
-		if not xml.attrib.classId then
-			launch:ShowErrMsg("^1Error parsing '%s': 'Spec' element missing 'classId' attribute", dbFileName)
-			return true
+		-- If classId is missing, try to get it from the Build element's className via self.build
+		local classId = xml.attrib.classId
+		local ascendClassId = xml.attrib.ascendClassId
+
+		if not classId and self.build and self.build.xmlClassName then
+			-- Fallback to Build element's className
+			local buildClassName = self.build.xmlClassName
+			if self.tree.classNameMap and self.tree.classNameMap[buildClassName] then
+				classId = tostring(self.tree.classNameMap[buildClassName])
+			end
 		end
-		if not xml.attrib.ascendClassId then
-			launch:ShowErrMsg("^1Error parsing '%s': 'Spec' element missing 'ascendClassId' attribute", dbFileName)
-			return true
+
+		if not ascendClassId and self.build and self.build.xmlAscendClassName then
+			-- Fallback to Build element's ascendClassName
+			local buildAscendClassName = self.build.xmlAscendClassName
+			if buildAscendClassName and buildAscendClassName ~= "None" then
+				local ascendData = self.tree.ascendNameMap and self.tree.ascendNameMap[buildAscendClassName]
+				if ascendData then
+					ascendClassId = tostring(ascendData.ascendClassId)
+				end
+			end
+		end
+
+		-- Default to Scion (class 0) if still no classId
+		if not classId then
+			classId = "0"
+		end
+		if not ascendClassId then
+			ascendClassId = "0"
 		end
 		local hashList = { }
 		for hash in xml.attrib.nodes:gmatch("%d+") do
@@ -168,7 +190,7 @@ function PassiveSpecClass:Load(xml, dbFileName)
 				end
 			end
 		end
-		self:ImportFromNodeList(tonumber(xml.attrib.classId), tonumber(xml.attrib.ascendClassId), tonumber(xml.attrib.secondaryAscendClassId or 0), hashList, self.hashOverrides, masteryEffects)
+		self:ImportFromNodeList(tonumber(classId), tonumber(ascendClassId), tonumber(xml.attrib.secondaryAscendClassId or 0), hashList, self.hashOverrides, masteryEffects)
 	elseif url then
 		self:DecodeURL(url)
 	end

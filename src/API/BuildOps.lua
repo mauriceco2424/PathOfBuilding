@@ -115,6 +115,7 @@ function M.get_full_calcs()
   local mainOutput = calcsTab.mainOutput or {}
   local output = calcsTab.output or {}
   local skillOutput = calcsTab.skillOutput or {}
+  local mainOutputCopy = deepCopySafe(mainOutput)
   local breakdown = calcsTab.breakdown or {}
 
   -- Extract config and skills context
