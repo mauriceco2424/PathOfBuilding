@@ -937,6 +937,16 @@ function M.get_items()
           end
         end
 
+        -- Defense stats (armour, evasion, energy shield, ward)
+        if it.armourData then
+          entry.armourData = {
+            armour = it.armourData.Armour,
+            evasion = it.armourData.Evasion,
+            energyShield = it.armourData.EnergyShield,
+            ward = it.armourData.Ward,
+          }
+        end
+
         -- Flask/Tincture activation flag stored in activeItemSet
         local set = itemsTab.activeItemSet
         if set and set[slotName] and set[slotName].active ~= nil then

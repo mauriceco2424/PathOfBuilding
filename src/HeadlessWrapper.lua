@@ -318,8 +318,16 @@ if os.getenv('POB_API_STDIO') == '1' or has_flag('--stdio') then
     mainObject.main:SetMode("BUILD", false, name or "", xmlText)
     runCallback("OnFrame")
   end
+  function loadBuildFromJSON(getItemsJSON, getPassiveSkillsJSON)
+    mainObject.main:SetMode("BUILD", false, "")
+    runCallback("OnFrame")
+    local build = mainObject.main.modes["BUILD"]
+    local charData = build.importTab:ImportItemsAndSkills(getItemsJSON)
+    build.importTab:ImportPassiveTreeAndJewels(getPassiveSkillsJSON, charData)
+  end
   _G.newBuild = newBuild
   _G.loadBuildFromXML = loadBuildFromXML
+  _G.loadBuildFromJSON = loadBuildFromJSON
   _G.build = mainObject.main.modes["BUILD"]
 
   -- Now start the API server

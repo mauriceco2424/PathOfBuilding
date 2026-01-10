@@ -285,6 +285,17 @@ handlers.set_skill_config = function(params)
   return { ok = true, varName = res.varName, value = res.value }
 end
 
+handlers.load_build_json = function(params)
+  if not params or type(params.itemsJson) ~= 'string' or type(params.passiveSkillsJson) ~= 'string' then
+    return { ok = false, error = 'missing itemsJson or passiveSkillsJson' }
+  end
+  if not _G.loadBuildFromJSON then
+    return { ok = false, error = 'headless wrapper not initialized' }
+  end
+  _G.loadBuildFromJSON(params.itemsJson, params.passiveSkillsJson)
+  return { ok = true, build_id = 1 }
+end
+
 return {
   handlers = handlers,
   version_meta = version_meta,
