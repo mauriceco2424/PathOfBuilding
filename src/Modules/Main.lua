@@ -112,10 +112,11 @@ function main:Init()
 	self.POESESSID = ""
 	self.showPublicBuilds = true
 	self.showFlavourText = true
+	self.showAnimations = true
+	self.showAllItemAffixes = true
+	self.errorReadingSettings = false
 
-	if self.userPath then
-		self:ChangeUserPath(self.userPath, ignoreBuild)
-	end
+	if not SetDPIScaleOverridePercent then SetDPIScaleOverridePercent = function(scale) end end
 
 	if launch.devMode and IsKeyDown("CTRL") or os.getenv("REGENERATE_MOD_CACHE") == "1" then
 		-- If modLib.parseMod doesn't find a cache entry it generates it.
@@ -137,6 +138,10 @@ function main:Init()
 
 	self.tree = { }
 	self:LoadTree(latestTreeVersion)
+
+	if self.userPath then
+		self:ChangeUserPath(self.userPath, ignoreBuild)
+	end
 
 	self.uniqueDB = { list = { }, loading = true }
 	self.rareDB = { list = { }, loading = true }
@@ -222,7 +227,7 @@ function main:Init()
 	end
 	self.controls.versionLabel = new("LabelControl", {"BOTTOMLEFT",self.anchorMain,"BOTTOMLEFT"}, {148, -2, 0, 16}, "")
 	self.controls.versionLabel.label = function()
-		return "^8Version: "..launch.versionNumber..(launch.versionBranch == "dev" and " (Dev)" or launch.versionBranch == "beta" and " (Beta)" or "")
+		return "^8" .. (launch.versionBranch == "beta" and "Beta: " or "Version: ") .. launch.versionNumber .. (launch.versionBranch == "dev" and " (Dev)" or "")
 	end
 	self.controls.devMode = new("LabelControl", {"BOTTOMLEFT",self.anchorMain,"BOTTOMLEFT"}, {0, -26, 0, 20}, colorCodes.NEGATIVE.."Dev Mode")
 	self.controls.devMode.shown = function()
@@ -514,9 +519,16 @@ function main:CallMode(func, ...)
 end
 
 function main:LoadSettings(ignoreBuild)
+	if self.errorReadingSettings then
+		return true
+	end
 	local setXML, errMsg = common.xml.LoadXMLFile(self.userPath.."Settings.xml")
-	if errMsg and not errMsg:match(".*No such file or directory") then
-		ConPrintf("Error: '%s'", errMsg)
+	if errMsg and errMsg:match(".*file returns nil") then
+		self.errorReadingSettings = true
+		self:OpenCloudErrorPopup(self.userPath.."Settings.xml")
+		return true
+	elseif errMsg and not errMsg:match(".*No such file or directory") then
+		self.errorReadingSettings = true
 		launch:ShowErrMsg("^1"..errMsg)
 		return true
 	end
@@ -644,9 +656,15 @@ function main:LoadSettings(ignoreBuild)
 				if node.attrib.showFlavourText then
 					self.showFlavourText = node.attrib.showFlavourText == "true"
 				end
+				if node.attrib.showAnimations then
+					self.showAnimations = node.attrib.showAnimations == "true"
+				end
+				if node.attrib.showAllItemAffixes then
+					self.showAllItemAffixes = node.attrib.showAllItemAffixes == "true"
+				end
 				if node.attrib.dpiScaleOverridePercent then
 					self.dpiScaleOverridePercent = tonumber(node.attrib.dpiScaleOverridePercent) or 0
-					if SetDPIScaleOverridePercent then SetDPIScaleOverridePercent(self.dpiScaleOverridePercent) end
+					SetDPIScaleOverridePercent(self.dpiScaleOverridePercent)
 				end
 			end
 		end
@@ -654,9 +672,16 @@ function main:LoadSettings(ignoreBuild)
 end
 
 function main:LoadSharedItems()
+	if self.errorReadingSettings then
+		return true
+	end
 	local setXML, errMsg = common.xml.LoadXMLFile(self.userPath.."Settings.xml")
-	if errMsg and not errMsg:match(".*No such file or directory") then
-		ConPrintf("Error: '%s'", errMsg)
+	if errMsg and errMsg:match(".*file returns nil") then
+		self.errorReadingSettings = true
+		self:OpenCloudErrorPopup(self.userPath.."Settings.xml")
+		return true
+	elseif errMsg and not errMsg:match(".*No such file or directory") then
+		self.errorReadingSettings = true
 		launch:ShowErrMsg("^1"..errMsg)
 		return true
 	end
@@ -702,6 +727,9 @@ function main:LoadSharedItems()
 end
 
 function main:SaveSettings()
+	if self.errorReadingSettings then
+		return
+	end
 	local setXML = { elem = "PathOfBuilding" }
 	local mode = { elem = "Mode", attrib = { mode = self.mode } }
 	for _, val in ipairs({ self:CallMode("GetArgs") }) do
@@ -766,6 +794,8 @@ function main:SaveSettings()
 		disableDevAutoSave = tostring(self.disableDevAutoSave),
 		showPublicBuilds = tostring(self.showPublicBuilds),
 		showFlavourText = tostring(self.showFlavourText),
+		showAnimations = tostring(self.showAnimations),
+		showAllItemAffixes = tostring(self.showAllItemAffixes),
 		dpiScaleOverridePercent = tostring(self.dpiScaleOverridePercent),
 	} })
 	local res, errMsg = common.xml.SaveXMLFile(setXML, self.userPath.."Settings.xml")
@@ -885,7 +915,7 @@ function main:OpenOptionsPopup()
 		{ label = "250%", percent = 250 },
 	}, function(index, value)
 		self.dpiScaleOverridePercent = value.percent
-		if SetDPIScaleOverridePercent then SetDPIScaleOverridePercent(value.percent) end
+		SetDPIScaleOverridePercent(value.percent)
 	end)
 	controls.dpiScaleOverrideLabel = new("LabelControl", { "RIGHT", controls.dpiScaleOverride, "LEFT" }, { defaultLabelSpacingPx, 0, 0, 16 }, "^7UI scaling override:")
 	controls.dpiScaleOverride.tooltipText = "Overrides Windows DPI scaling inside Path of Building.\nChoose a percentage between 100% and 250% or revert to the system default."
@@ -967,6 +997,18 @@ function main:OpenOptionsPopup()
 	controls.showFlavourText = new("CheckBoxControl", { "TOPLEFT", nil, "TOPLEFT" }, { defaultLabelPlacementX, currentY, 20 }, "^7Styled Tooltips with Flavour Text:", function(state)
 		self.showFlavourText = state
 	end)
+	controls.showFlavourText.tooltipText = "If updating while inside a build, please re-load the build after saving."
+
+	nextRow()
+	controls.showAnimations = new("CheckBoxControl", { "TOPLEFT", nil, "TOPLEFT" }, { defaultLabelPlacementX, currentY, 20 }, "^7Show Animations:", function(state)
+		self.showAnimations = state
+	end)
+
+	nextRow()
+	controls.showAllItemAffixes = new("CheckBoxControl", { "TOPLEFT", nil, "TOPLEFT" }, { defaultLabelPlacementX, currentY, 20 }, "^7Show all item affixes sliders:", function(state)
+		self.showAllItemAffixes = state
+	end)
+	controls.showAllItemAffixes.tooltipText = "Display all item affix slots as a stacked list instead of hiding them in dropdowns"
 
 	nextRow()
 	drawSectionHeader("build", "Build-related options")
@@ -1057,6 +1099,8 @@ function main:OpenOptionsPopup()
 	controls.titlebarName.state = self.showTitlebarName
 	controls.showPublicBuilds.state = self.showPublicBuilds
 	controls.showFlavourText.state = self.showFlavourText
+	controls.showAnimations.state = self.showAnimations
+	controls.showAllItemAffixes.state = self.showAllItemAffixes
 	local initialNodePowerTheme = self.nodePowerTheme
 	local initialColorPositive = self.colorPositive
 	local initialColorNegative = self.colorNegative
@@ -1077,6 +1121,8 @@ function main:OpenOptionsPopup()
 	local initialDisableDevAutoSave = self.disableDevAutoSave
 	local initialShowPublicBuilds = self.showPublicBuilds
 	local initialShowFlavourText = self.showFlavourText
+	local initialShowAnimations = self.showAnimations
+	local initialShowAllItemAffixes = self.showAllItemAffixes
 	local initialDpiScaleOverridePercent = self.dpiScaleOverridePercent
 
 	-- last line with buttons has more spacing
@@ -1103,7 +1149,7 @@ function main:OpenOptionsPopup()
 		if not launch.devMode then
 			main:SetManifestBranch(self.betaTest and "beta" or "master")
 		end
-		if SetDPIScaleOverridePercent then SetDPIScaleOverridePercent(self.dpiScaleOverridePercent) end
+		SetDPIScaleOverridePercent(self.dpiScaleOverridePercent)
 		main:ClosePopup()
 		main:SaveSettings()
 	end)
@@ -1131,8 +1177,10 @@ function main:OpenOptionsPopup()
 		self.disableDevAutoSave = initialDisableDevAutoSave
 		self.showPublicBuilds = initialShowPublicBuilds
 		self.showFlavourText = initialShowFlavourText
+		self.showAnimations = initialShowAnimations
+		self.showAllItemAffixes = initialShowAllItemAffixes
 		self.dpiScaleOverridePercent = initialDpiScaleOverridePercent
-		if SetDPIScaleOverridePercent then SetDPIScaleOverridePercent(self.dpiScaleOverridePercent) end
+		SetDPIScaleOverridePercent(self.dpiScaleOverridePercent)
 		main:ClosePopup()
 	end)
 	nextRow(1.5)
@@ -1505,7 +1553,7 @@ function main:OpenMessagePopup(title, msg)
 	return self:OpenPopup(m_max(DrawStringWidth(16, "VAR", msg) + 30, 190), 70 + numMsgLines * 16, title, controls, "close")
 end
 
-function main:OpenConfirmPopup(title, msg, confirmLabel, onConfirm)
+function main:OpenConfirmPopup(title, msg, confirmLabel, onConfirm, extraLabel, onExtra)
 	local controls = { }
 	local numMsgLines = 0
 	for line in string.gmatch(msg .. "\n", "([^\n]*)\n") do
@@ -1513,14 +1561,43 @@ function main:OpenConfirmPopup(title, msg, confirmLabel, onConfirm)
 		numMsgLines = numMsgLines + 1
 	end
 	local confirmWidth = m_max(80, DrawStringWidth(16, "VAR", confirmLabel) + 10)
-	controls.confirm = new("ButtonControl", nil, {-5 - m_ceil(confirmWidth/2), 40 + numMsgLines * 16, confirmWidth, 20}, confirmLabel, function()
-		main:ClosePopup()
-		onConfirm()
-	end)
-	t_insert(controls, new("ButtonControl", nil, {5 + m_ceil(confirmWidth/2), 40 + numMsgLines * 16, confirmWidth, 20}, "Cancel", function()
-		main:ClosePopup()
-	end))
-	return self:OpenPopup(m_max(DrawStringWidth(16, "VAR", msg) + 30, 190), 70 + numMsgLines * 16, title, controls, "confirm")
+	
+	if extraLabel and onExtra then
+		-- Three button layout: Continue (left), Connect Path (center), Cancel (right)
+		local extraWidth = m_max(80, DrawStringWidth(16, "VAR", extraLabel) + 10)
+		local cancelWidth = 80
+		local spacing = 10
+		local totalWidth = confirmWidth + extraWidth + cancelWidth + (spacing * 2)
+		local leftEdge = -totalWidth / 2
+		local buttonY = 40 + numMsgLines * 16
+		local function placeButton(width, label, onClick, isConfirm)
+			local centerX = leftEdge + width / 2
+			local ctrl = new("ButtonControl", nil, {centerX, buttonY, width, 20}, label, function()
+				main:ClosePopup()
+				onClick()
+			end)
+			if isConfirm then
+				controls.confirm = ctrl
+			else
+				t_insert(controls, ctrl)
+			end
+			leftEdge = leftEdge + width + spacing
+		end
+		placeButton(confirmWidth, confirmLabel, onConfirm, true)
+		placeButton(extraWidth, extraLabel, onExtra)
+		placeButton(cancelWidth, "Cancel", function() end)
+		return self:OpenPopup(m_max(DrawStringWidth(16, "VAR", msg) + 30, totalWidth + 40), 70 + numMsgLines * 16, title, controls, "confirm")
+	else
+		-- Two button layout (original)
+		controls.confirm = new("ButtonControl", nil, {-5 - m_ceil(confirmWidth/2), 40 + numMsgLines * 16, confirmWidth, 20}, confirmLabel, function()
+			main:ClosePopup()
+			onConfirm()
+		end)
+		t_insert(controls, new("ButtonControl", nil, {5 + m_ceil(confirmWidth/2), 40 + numMsgLines * 16, confirmWidth, 20}, "Cancel", function()
+			main:ClosePopup()
+		end))
+		return self:OpenPopup(m_max(DrawStringWidth(16, "VAR", msg) + 30, 190), 70 + numMsgLines * 16, title, controls, "confirm")
+	end
 end
 
 function main:OpenNewFolderPopup(path, onClose)
@@ -1549,6 +1626,35 @@ function main:OpenNewFolderPopup(path, onClose)
 		main:ClosePopup()
 	end)
 	main:OpenPopup(370, 100, "New Folder", controls, "create", "edit", "cancel")
+end
+
+-- Show an error popup if a file cannot be read due to cloud provider unavailability.
+-- Help button opens a URL to PoB's GitHub wiki.
+function main:OpenCloudErrorPopup(fileName)
+	local provider, _, status = GetCloudProvider(fileName)
+	ConPrintf('^1Error: file offline "%s" provider: "%s" status: "%s"', fileName or "?", provider, status)
+	fileName = fileName and "\n\n^8'"..fileName.."'" or ""
+	local version = "^8v"..launch.versionNumber..(launch.versionBranch and " "..launch.versionBranch or "")..(launch.devMode and " (dev)" or "")
+	local title = " ^1Error "
+	provider = provider or "your cloud provider"
+	local statusText = tostring(status) or "nil"
+	local msg = "\n^7Cannot read file.\n\nMake sure "..provider.." is running then restart "..APP_NAME.." and try again."..
+		fileName.."\nstatus: "..statusText.."\n\n"..version
+	local url = "https://github.com/PathOfBuildingCommunity/PathOfBuilding/wiki/CloudError"
+	local controls = { }
+	local numMsgLines = 0
+	for line in string.gmatch(msg .. "\n", "([^\n]*)\n") do
+		t_insert(controls, new("LabelControl", nil, {0, 20 + numMsgLines * 16, 0, 16}, line))
+		numMsgLines = numMsgLines + 1
+	end
+	controls.help = new("ButtonControl", nil, {-55, 40 + numMsgLines * 16, 80, 20}, "Help (web)", function()
+		OpenURL(url)
+	end)
+	controls.help.tooltipText = url
+	controls.close = new("ButtonControl", nil, {55, 40 + numMsgLines * 16, 80, 20}, "Ok", function()
+		main:ClosePopup()
+	end)
+	return self:OpenPopup(m_max(DrawStringWidth(16, "VAR", msg) + 30, 190), 70 + numMsgLines * 16, title, controls, "close")
 end
 
 function main:SetWindowTitleSubtext(subtext)

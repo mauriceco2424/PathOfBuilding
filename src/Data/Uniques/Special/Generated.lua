@@ -734,13 +734,20 @@ function buildForbidden(classNotables)
 		table.insert(forbidden[name], "Rarity: UNIQUE")
 		table.insert(forbidden[name], "Forbidden " .. name)
 		table.insert(forbidden[name], (name == "Flame" and "Crimson" or "Cobalt") .. " Jewel")
+		local classList = { }
+		for className in pairs(classNotables) do
+			if className ~= "alternate_ascendancies" then
+				table.insert(classList, className)
+			end
+		end
+		table.sort(classList)
 		local index = 1
-		for className, notableTable in pairs(classNotables) do
-			if className ~= "alternate_ascendancies" then --Remove Affliction Ascendancy's
-				for _, notableName in ipairs(notableTable) do
-					table.insert(forbidden[name], "Variant: (" .. className .. ") " .. notableName)
-					index = index + 1
-				end
+		for _, className in ipairs(classList) do
+			local notableTable = classNotables[className]
+			table.sort(notableTable)
+			for _, notableName in ipairs(notableTable) do
+				table.insert(forbidden[name], "Variant: (" .. className .. ") " .. notableName)
+				index = index + 1
 			end
 		end
 		if name == "Flame" then
@@ -751,13 +758,13 @@ function buildForbidden(classNotables)
 		table.insert(forbidden[name], "Limited to: 1")
 		table.insert(forbidden[name], "Item Level: 83")
 		index = 1
-		for className, notableTable in pairs(classNotables) do
-			if className ~= "alternate_ascendancies" then --Remove Affliction Ascendancy's
-				for _, notableName in ipairs(notableTable) do
-					table.insert(forbidden[name], "{variant:" .. index .. "}" .. "Requires Class " .. className)
-					table.insert(forbidden[name], "{variant:" .. index .. "}" .. "Allocates ".. notableName .. " if you have the matching modifier on Forbidden " .. (name == "Flame" and "Flesh" or "Flame"))
-					index = index + 1
-				end
+		for _, className in ipairs(classList) do
+			local notableTable = classNotables[className]
+			table.sort(notableTable)
+			for _, notableName in ipairs(notableTable) do
+				table.insert(forbidden[name], "{variant:" .. index .. "}" .. "Requires Class " .. className)
+				table.insert(forbidden[name], "{variant:" .. index .. "}" .. "Allocates ".. notableName .. " if you have the matching modifier on Forbidden " .. (name == "Flame" and "Flesh" or "Flame"))
+				index = index + 1
 			end
 		end
 		table.insert(forbidden[name], "Corrupted")
@@ -829,7 +836,7 @@ function buildKeystoneItems(keystoneMap)
 	table.insert(impossibleEscape, "Variant: Everything (QoL Test Variant)")
 	local variantCount = #impossibleEscapeKeystones + 1
 	for index, name in ipairs(impossibleEscapeKeystones) do
-		table.insert(impossibleEscape, "{variant:"..index..","..variantCount.."}Passives in radius of "..name.." can be allocated without being connected to your tree")
+		table.insert(impossibleEscape, "{variant:"..index..","..variantCount.."}Passive Skills in radius of "..name.." can be allocated without being connected to your tree")
 	end
 	table.insert(impossibleEscape, "Corrupted")
 	table.insert(data.uniques.generated, table.concat(impossibleEscape, "\n"))
@@ -913,8 +920,20 @@ Variant: Current
 ]]
 )
 
-for name, _ in pairs(replicaDragonfangsFlightMods) do
-	table.insert(replicaDragonfangsFlight, "Variant: "..name)
+local sortedReplicaDragonfangsFlightMods = { }
+
+for name, line in pairs(replicaDragonfangsFlightMods) do
+	table.insert(sortedReplicaDragonfangsFlightMods, { line, name } )
+end
+table.sort(sortedReplicaDragonfangsFlightMods, function (m1, m2)
+	if m1[1] == m2[1] then
+		return m1[2] < m2[2]
+	end
+	return m1[1] < m2[1]
+end )
+
+for _, mod in ipairs(sortedReplicaDragonfangsFlightMods) do
+	table.insert(replicaDragonfangsFlight, "Variant: "..mod[2])
 end
 
 table.insert(replicaDragonfangsFlight,
@@ -926,8 +945,8 @@ table.insert(replicaDragonfangsFlight,
 )
 
 local index = 3
-for _, line in pairs(replicaDragonfangsFlightMods) do
-	table.insert(replicaDragonfangsFlight, "{variant:"..index.."}"..line)
+for _, mod in ipairs(sortedReplicaDragonfangsFlightMods) do
+	table.insert(replicaDragonfangsFlight, "{variant:"..index.."}"..mod[1])
 	index = index + 1
 end
 

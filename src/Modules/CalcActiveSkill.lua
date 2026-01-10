@@ -109,9 +109,11 @@ function calcs.createActiveSkill(activeEffect, supportList, actor, socketGroup, 
 
 	for index, supportEffect in ipairs(supportList) do
 		-- Pass 1: Add skill types from compatible supports
-		if calcLib.canGrantedEffectSupportActiveSkill(supportEffect.grantedEffect, activeSkill) then
-			for _, skillType in pairs(supportEffect.grantedEffect.addSkillTypes) do
-				activeSkill.skillTypes[skillType] = true
+		if supportEffect.grantedEffect.support then
+			if calcLib.canGrantedEffectSupportActiveSkill(supportEffect.grantedEffect, activeSkill) then
+				for _, skillType in pairs(supportEffect.grantedEffect.addSkillTypes) do
+					activeSkill.skillTypes[skillType] = true
+				end
 			end
 		else
 			t_insert(rejectedSupportsIndices, index)
@@ -125,11 +127,13 @@ function calcs.createActiveSkill(activeEffect, supportList, actor, socketGroup, 
 		notAddedNewSupport = true
 		for index, supportEffectIndex in ipairs(rejectedSupportsIndices) do
 			local supportEffect = supportList[supportEffectIndex]
-			if calcLib.canGrantedEffectSupportActiveSkill(supportEffect.grantedEffect, activeSkill) then
-				notAddedNewSupport = false
-				rejectedSupportsIndices[index] = nil
-				for _, skillType in pairs(supportEffect.grantedEffect.addSkillTypes) do
-					activeSkill.skillTypes[skillType] = true
+			if supportEffect.grantedEffect.support then
+				if calcLib.canGrantedEffectSupportActiveSkill(supportEffect.grantedEffect, activeSkill) then
+					notAddedNewSupport = false
+					rejectedSupportsIndices[index] = nil
+					for _, skillType in pairs(supportEffect.grantedEffect.addSkillTypes) do
+						activeSkill.skillTypes[skillType] = true
+					end
 				end
 			end
 		end
@@ -137,15 +141,17 @@ function calcs.createActiveSkill(activeEffect, supportList, actor, socketGroup, 
 	
 	for _, supportEffect in ipairs(supportList) do
 		-- Pass 2: Add all compatible supports
-		if calcLib.canGrantedEffectSupportActiveSkill(supportEffect.grantedEffect, activeSkill) then
-			t_insert(activeSkill.effectList, supportEffect)
-			if supportEffect.isSupporting and activeEffect.srcInstance then
-				supportEffect.isSupporting[activeEffect.srcInstance] = true
-			end
-			if supportEffect.grantedEffect.addFlags and not summonSkill then
-				-- Support skill adds flags to supported skills (eg. Remote Mine adds 'mine')
-				for k in pairs(supportEffect.grantedEffect.addFlags) do
-					skillFlags[k] = true
+		if supportEffect.grantedEffect.support then
+			if calcLib.canGrantedEffectSupportActiveSkill(supportEffect.grantedEffect, activeSkill) then
+				t_insert(activeSkill.effectList, supportEffect)
+				if supportEffect.isSupporting and activeEffect.srcInstance then
+					supportEffect.isSupporting[activeEffect.srcInstance] = true
+				end
+				if supportEffect.grantedEffect.addFlags and not summonSkill then
+					-- Support skill adds flags to supported skills (eg. Remote Mine adds 'mine')
+					for k in pairs(supportEffect.grantedEffect.addFlags) do
+						skillFlags[k] = true
+					end
 				end
 			end
 		end
@@ -421,9 +427,9 @@ function calcs.buildActiveSkillModList(env, activeSkill)
 
 	-- Calculate Distance for meleeDistance or projectileDistance (for melee proximity, e.g. Impact)
 	if skillFlags.melee then
-		effectiveRange = env.configInput.meleeDistance
+		effectiveRange = env.configInput.meleeDistance or env.configPlaceholder.meleeDistance
 	else
-		effectiveRange = env.configInput.projectileDistance
+		effectiveRange = env.configInput.projectileDistance or env.configPlaceholder.projectileDistance
 	end
 
 	-- Build config structure for modifier searches
@@ -662,10 +668,16 @@ function calcs.buildActiveSkillModList(env, activeSkill)
 			local minion = { }
 			activeSkill.minion = minion
 			skillFlags.haveMinion = true
-			minion.parent = env.player
-			minion.enemy = env.enemy
 			minion.type = minionType
 			minion.minionData = env.data.minions[minionType]
+			minion.hostile = minion.minionData and minion.minionData.hostile or false
+			if minion.hostile then
+				minion.parent = env.enemy
+				minion.enemy = env.player
+			else
+				minion.parent = env.player
+				minion.enemy = env.enemy
+			end
 			minion.level = activeSkill.skillData.minionLevelIsEnemyLevel and env.enemyLevel or 
 								activeSkill.skillData.minionLevelIsPlayerLevel and (m_min(env.build and env.build.characterLevel or activeSkill.skillData.minionLevel or activeEffect.grantedEffectLevel.levelRequirement, activeSkill.skillData.minionLevelIsPlayerLevel)) or 
 								minionSupportLevel[minion.type] or activeSkill.skillData.minionLevel or activeEffect.grantedEffectLevel.levelRequirement
@@ -673,9 +685,14 @@ function calcs.buildActiveSkillModList(env, activeSkill)
 			minion.level = m_min(m_max(minion.level,1),100) 
 			minion.itemList = { }
 			minion.uses = activeGrantedEffect.minionUses
-			minion.lifeTable = (minion.minionData.lifeScaling == "AltLife1" and env.data.monsterLifeTable2) or (minion.minionData.lifeScaling == "AltLife2" and env.data.monsterLifeTable3) or (isSpectre and env.data.monsterLifeTable) or env.data.monsterAllyLifeTable
+			if minion.minionData.hostile then
+				minion.lifeTable = env.data.monsterLifeTable
+			else
+				minion.lifeTable = (minion.minionData.lifeScaling == "AltLife1" and env.data.monsterLifeTable2) or (minion.minionData.lifeScaling == "AltLife2" and env.data.monsterLifeTable3) or (isSpectre and env.data.monsterLifeTable) or env.data.monsterAllyLifeTable
+			end
 			local attackTime = minion.minionData.attackTime
-			local damage = (isSpectre and env.data.monsterDamageTable[minion.level] or env.data.monsterAllyDamageTable[minion.level]) * minion.minionData.damage
+			local damageTable = (isSpectre or minion.minionData.hostile) and env.data.monsterDamageTable or env.data.monsterAllyDamageTable
+			local damage = damageTable[minion.level] * minion.minionData.damage
 			if not minion.minionData.baseDamageIgnoresAttackSpeed then -- minions with this flag do not factor attack time into their base damage
 				 damage = damage * attackTime
 			end
