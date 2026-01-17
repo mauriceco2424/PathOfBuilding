@@ -1867,4 +1867,226 @@ function M.get_tree_stats()
   return result
 end
 
+-- Get all jewel sockets from the passive tree
+-- Returns list of socket nodes with their allocation status and equipped jewel
+function M.get_jewel_sockets()
+  if not build or not build.spec then
+    return nil, "build/spec not initialized"
+  end
+  if not build.itemsTab then
+    return nil, "items not initialized"
+  end
+
+  local spec = build.spec
+  local itemsTab = build.itemsTab
+  local result = {}
+
+  -- Iterate through all socket controls (jewel sockets in tree)
+  for nodeId, socketCtrl in pairs(itemsTab.sockets) do
+    local node = spec.nodes[nodeId]
+    local isAllocated = spec.allocNodes[nodeId] ~= nil
+    local equippedJewelId = spec.jewels[nodeId] or 0
+    local equippedJewel = nil
+
+    if equippedJewelId > 0 then
+      local item = itemsTab.items[equippedJewelId]
+      if item then
+        equippedJewel = {
+          id = equippedJewelId,
+          name = item.name,
+          baseName = item.baseName,
+          type = item.type,
+          rarity = item.rarity,
+          raw = item.raw,
+        }
+      end
+    end
+
+    table.insert(result, {
+      nodeId = nodeId,
+      slotName = socketCtrl.slotName,
+      isAllocated = isAllocated,
+      equippedJewelId = equippedJewelId,
+      equippedJewel = equippedJewel,
+      -- Include node position for reference
+      x = node and node.x or nil,
+      y = node and node.y or nil,
+    })
+  end
+
+  -- Sort by nodeId for consistent ordering
+  table.sort(result, function(a, b) return a.nodeId < b.nodeId end)
+
+  return result
+end
+
+-- Equip a jewel to a tree socket
+-- params: { nodeId: number, text: string } or { nodeId: number, itemId: number }
+-- If nodeId is not allocated, it will be automatically allocated
+function M.set_jewel(params)
+  if not build or not build.spec then
+    return nil, "build/spec not initialized"
+  end
+  if not build.itemsTab then
+    return nil, "items not initialized"
+  end
+  if type(params) ~= 'table' then
+    return nil, "invalid params"
+  end
+
+  local nodeId = tonumber(params.nodeId)
+  if not nodeId then
+    return nil, "missing or invalid nodeId"
+  end
+
+  local spec = build.spec
+  local itemsTab = build.itemsTab
+
+  -- Verify this is a valid jewel socket
+  local socketCtrl = itemsTab.sockets[nodeId]
+  if not socketCtrl then
+    return nil, "nodeId " .. tostring(nodeId) .. " is not a jewel socket"
+  end
+
+  -- If the socket node is not allocated, allocate it first
+  if not spec.allocNodes[nodeId] then
+    -- Use update_tree_delta to add the node
+    local current = M.get_tree()
+    if not current then
+      return nil, "failed to get current tree"
+    end
+
+    local newNodes = {}
+    for _, id in ipairs(current.nodes) do
+      table.insert(newNodes, id)
+    end
+    table.insert(newNodes, nodeId)
+
+    -- Import the new tree with the socket allocated
+    spec:ImportFromNodeList(
+      current.classId or 0,
+      current.ascendClassId or 0,
+      current.secondaryAscendClassId or 0,
+      newNodes,
+      {},
+      current.masteryEffects or {}
+    )
+
+    -- Update sockets status
+    itemsTab:UpdateSockets()
+  end
+
+  local itemId = nil
+
+  -- If text is provided, create the item first
+  if params.text then
+    if #params.text == 0 then
+      return nil, "item text cannot be empty"
+    end
+    if #params.text > MAX_ITEM_TEXT_LENGTH then
+      return nil, string.format("item text too long (max %d bytes)", MAX_ITEM_TEXT_LENGTH)
+    end
+
+    local ok, item = pcall(new, 'Item', params.text)
+    if not ok then
+      return nil, "invalid item text: " .. tostring(item)
+    end
+    if not item or not item.baseName then
+      return nil, "failed to parse item"
+    end
+
+    -- Verify it's a jewel
+    if item.type ~= "Jewel" then
+      return nil, "item is not a jewel (type: " .. tostring(item.type) .. ")"
+    end
+
+    item:NormaliseQuality()
+    itemsTab:AddItem(item, true) -- noAutoEquip = true
+    itemId = item.id
+
+  elseif params.itemId then
+    -- Use existing item by ID
+    itemId = tonumber(params.itemId)
+    if not itemId or not itemsTab.items[itemId] then
+      return nil, "invalid itemId or item not found"
+    end
+  else
+    return nil, "must provide either text or itemId"
+  end
+
+  -- Equip the jewel to the socket
+  local slotName = socketCtrl.slotName
+  if itemsTab.slots[slotName] then
+    itemsTab.slots[slotName]:SetSelItemId(itemId)
+    itemsTab:PopulateSlots()
+  else
+    -- Fallback: directly set in spec.jewels
+    spec.jewels[nodeId] = itemId
+    spec:BuildClusterJewelGraphs()
+  end
+
+  itemsTab:AddUndoState()
+  build.buildFlag = true
+  M.get_main_output()
+
+  local item = itemsTab.items[itemId]
+  return {
+    nodeId = nodeId,
+    slotName = slotName,
+    itemId = itemId,
+    name = item and item.name or nil,
+    baseName = item and item.baseName or nil,
+  }
+end
+
+-- Remove a jewel from a tree socket
+-- params: { nodeId: number }
+function M.remove_jewel(params)
+  if not build or not build.spec then
+    return nil, "build/spec not initialized"
+  end
+  if not build.itemsTab then
+    return nil, "items not initialized"
+  end
+  if type(params) ~= 'table' then
+    return nil, "invalid params"
+  end
+
+  local nodeId = tonumber(params.nodeId)
+  if not nodeId then
+    return nil, "missing or invalid nodeId"
+  end
+
+  local spec = build.spec
+  local itemsTab = build.itemsTab
+
+  -- Verify this is a valid jewel socket
+  local socketCtrl = itemsTab.sockets[nodeId]
+  if not socketCtrl then
+    return nil, "nodeId " .. tostring(nodeId) .. " is not a jewel socket"
+  end
+
+  local slotName = socketCtrl.slotName
+  local previousJewelId = spec.jewels[nodeId] or 0
+
+  -- Remove the jewel
+  if itemsTab.slots[slotName] then
+    itemsTab.slots[slotName]:SetSelItemId(0)
+    itemsTab:PopulateSlots()
+  else
+    spec.jewels[nodeId] = 0
+    spec:BuildClusterJewelGraphs()
+  end
+
+  itemsTab:AddUndoState()
+  build.buildFlag = true
+  M.get_main_output()
+
+  return {
+    nodeId = nodeId,
+    slotName = slotName,
+    previousJewelId = previousJewelId,
+  }
+end
+
 return M

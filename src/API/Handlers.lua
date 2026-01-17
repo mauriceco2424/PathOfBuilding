@@ -296,6 +296,24 @@ handlers.load_build_json = function(params)
   return { ok = true, build_id = 1 }
 end
 
+handlers.get_jewel_sockets = function(params)
+  local sockets, err = BuildOps.get_jewel_sockets()
+  if not sockets then return { ok = false, error = err } end
+  return { ok = true, sockets = sockets }
+end
+
+handlers.set_jewel = function(params)
+  local res, err = BuildOps.set_jewel(params or {})
+  if not res then return { ok = false, error = err or 'failed to set jewel' } end
+  return { ok = true, jewel = res }
+end
+
+handlers.remove_jewel = function(params)
+  local res, err = BuildOps.remove_jewel(params or {})
+  if not res then return { ok = false, error = err or 'failed to remove jewel' } end
+  return { ok = true, result = res }
+end
+
 return {
   handlers = handlers,
   version_meta = version_meta,
