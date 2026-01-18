@@ -41,7 +41,8 @@ function PassiveSpecClass:Init(treeVersion, convert)
 	self.nodes = { }
 	for _, treeNode in pairs(self.tree.nodes) do
 		-- Exclude proxy or groupless nodes, as well as expansion sockets
-		if treeNode.group and not treeNode.isProxy and not treeNode.group.isProxy and (not treeNode.expansionJewel or not treeNode.expansionJewel.parent) then
+		-- Allow ascendancy nodes even if they lack a group
+		if (treeNode.group or treeNode.ascendancyName) and not treeNode.isProxy and (not treeNode.group or not treeNode.group.isProxy) and (not treeNode.expansionJewel or not treeNode.expansionJewel.parent) then
 			self.nodes[treeNode.id] = setmetatable({
 				linked = { },
 				power = { }
@@ -96,8 +97,10 @@ function PassiveSpecClass:Load(xml, dbFileName)
 				end
 				-- Empty URL elements are ignored (no error, just skip)
 			elseif node.elem == "Sockets" then
+				local socketCount = 0
 				for _, child in ipairs(node) do
 					if child.elem == "Socket" then
+						socketCount = socketCount + 1
 						if not child.attrib.nodeId then
 							launch:ShowErrMsg("^1Error parsing '%s': 'Socket' element missing 'nodeId' attribute", dbFileName)
 							return true
@@ -117,6 +120,7 @@ function PassiveSpecClass:Load(xml, dbFileName)
 			end
 		end
 	end
+
 	if xml.attrib.nodes then
 		-- New format
 		-- If classId is missing, try to get it from the Build element's className via self.build
@@ -1271,6 +1275,12 @@ function PassiveSpecClass:BuildAllDependsAndPaths()
 		else
 			if node.type == "Mastery" and self.masterySelections[id] then
 				local effect = self.tree.masteryEffects[self.masterySelections[id]]
+				-- If effect is valid but node isn't allocated, auto-allocate it
+				-- This fixes the round-trip bug where masteryEffects are saved but nodes list doesn't include mastery nodes
+				if effect and not self.allocNodes[id] then
+					node.alloc = true
+					self.allocNodes[id] = node
+				end
 				if effect and self.allocNodes[id] then
 					if self.hashOverrides and self.hashOverrides[id] then
 						self:ReplaceNode(node, self.hashOverrides[id])
@@ -1291,8 +1301,8 @@ function PassiveSpecClass:BuildAllDependsAndPaths()
 							self.allocatedMasteryTypeCount = self.allocatedMasteryTypeCount + 1
 						end
 					end
-				-- if the tree doesn't recognize the mastery selection or if we have a selection on a mastery that isn't allocated
-				else
+				-- if the tree doesn't recognize the mastery selection (invalid effect ID)
+				elseif not effect then
 					self.nodes[id].alloc = false
 					self.allocNodes[id] = nil
 					self.masterySelections[id] = nil

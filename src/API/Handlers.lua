@@ -91,7 +91,34 @@ handlers.load_build_xml = function(params)
   if not _G.loadBuildFromXML then
     return { ok = false, error = 'headless wrapper not initialized' }
   end
+
+  -- NOTE: Do NOT call newBuild() before loadBuildFromXML - it breaks the import!
+  -- loadBuildFromXML already calls SetMode which clears previous state.
   _G.loadBuildFromXML(params.xml, name)
+
+  -- Run additional OnFrame to ensure PostLoad and cluster jewel graphs are built
+  if _G.runCallback then
+    _G.runCallback("OnFrame")
+    _G.runCallback("OnFrame")
+  end
+
+  -- CRITICAL: After SetMode, _G.build may be stale - we need to update it!
+  -- SetMode creates a new build object in mainObject.main.modes["BUILD"]
+  -- But _G.build was set once at startup and points to the OLD object
+  if _G.mainObject and _G.mainObject.main and _G.mainObject.main.modes then
+    local newBuild = _G.mainObject.main.modes["BUILD"]
+    if newBuild and newBuild ~= _G.build then
+      io.stderr:write("[load_build_xml] Updating _G.build to new build object\n")
+      _G.build = newBuild
+    end
+  end
+
+  -- Check for failure conditions
+  local build = _G.build
+  if not build then
+    io.stderr:write("[load_build_xml] ERROR: build object is nil after load\n")
+  end
+
   return { ok = true, build_id = 1 }
 end
 
@@ -132,6 +159,12 @@ handlers.get_tree = function(params)
   return { ok = true, tree = tree }
 end
 
+handlers.get_cluster_nodes = function(params)
+  local nodes, err = BuildOps.get_cluster_nodes()
+  if not nodes then return { ok = false, error = err } end
+  return { ok = true, clusterNodes = nodes }
+end
+
 handlers.set_main_selection = function(params)
   local ok2, err = BuildOps.set_main_selection(params or {})
   if not ok2 then return { ok = false, error = err } end
@@ -152,6 +185,12 @@ handlers.add_item_text = function(params)
   local res, err = BuildOps.add_item_text(params or {})
   if not res then return { ok = false, error = err } end
   return { ok = true, item = res }
+end
+
+handlers.add_items_batch = function(params)
+  local res, err = BuildOps.add_items_batch(params or {})
+  if not res then return { ok = false, error = err } end
+  return { ok = true, results = res.results, successCount = res.successCount }
 end
 
 handlers.export_build_xml = function(params)
@@ -292,6 +331,8 @@ handlers.load_build_json = function(params)
   if not _G.loadBuildFromJSON then
     return { ok = false, error = 'headless wrapper not initialized' }
   end
+  -- NOTE: Do NOT call newBuild() before loadBuildFromJSON - it can break the import!
+  -- loadBuildFromJSON already calls SetMode which clears previous state.
   _G.loadBuildFromJSON(params.itemsJson, params.passiveSkillsJson)
   return { ok = true, build_id = 1 }
 end
@@ -311,6 +352,12 @@ end
 handlers.remove_jewel = function(params)
   local res, err = BuildOps.remove_jewel(params or {})
   if not res then return { ok = false, error = err or 'failed to remove jewel' } end
+  return { ok = true, result = res }
+end
+
+handlers.get_nodes_in_radius = function(params)
+  local res, err = BuildOps.get_nodes_in_radius(params or {})
+  if not res then return { ok = false, error = err or 'failed to get nodes in radius' } end
   return { ok = true, result = res }
 end
 

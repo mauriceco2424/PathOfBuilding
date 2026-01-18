@@ -169,8 +169,127 @@ function M.get_tree()
   return out
 end
 
+-- Get all cluster jewel nodes with their positions
+-- Cluster nodes have IDs >= 0x10000 (65536)
+-- Each node includes socketNodeId for frontend grouping
+function M.get_cluster_nodes()
+  if not build or not build.spec then
+    return nil, "build/spec not initialized"
+  end
+
+  local spec = build.spec
+
+  -- Debug: Check what jewels are equipped in sockets
+  local jewelCount = 0
+  local clusterJewelCount = 0
+  if spec.jewels then
+    for nodeId, itemId in pairs(spec.jewels) do
+      jewelCount = jewelCount + 1
+      local item = build.itemsTab.items[itemId]
+      if item and item.clusterJewel then
+        clusterJewelCount = clusterJewelCount + 1
+        io.stderr:write(string.format("[get_cluster_nodes] Cluster jewel at socket %d: %s (size=%s)\n",
+          nodeId, item.name or "?", item.clusterJewel.size or "?"))
+      end
+    end
+  end
+
+  -- Debug: Also check itemsTab for any cluster jewels (regardless of socket assignment)
+  local itemsClusterCount = 0
+  if build.itemsTab and build.itemsTab.items then
+    for id, item in pairs(build.itemsTab.items) do
+      if item.clusterJewel then
+        itemsClusterCount = itemsClusterCount + 1
+        io.stderr:write(string.format("[get_cluster_nodes] ItemsTab cluster jewel id=%d: %s\n", id, item.name or "?"))
+      end
+    end
+  end
+
+  -- Count subGraphs (it's a table, not array, so use pairs)
+  local subGraphCount = 0
+  if spec.subGraphs then
+    for _ in pairs(spec.subGraphs) do subGraphCount = subGraphCount + 1 end
+  end
+  io.stderr:write(string.format("[get_cluster_nodes] spec.jewels=%d, clusters=%d, itemsTab.clusters=%d, subGraphs=%d\n",
+    jewelCount, clusterJewelCount, itemsClusterCount, subGraphCount))
+
+  -- Ensure cluster jewel graphs are built (they may not be if build was just loaded)
+  if spec.BuildClusterJewelGraphs then
+    spec:BuildClusterJewelGraphs()
+    subGraphCount = 0
+    if spec.subGraphs then
+      for _ in pairs(spec.subGraphs) do subGraphCount = subGraphCount + 1 end
+    end
+    io.stderr:write(string.format("[get_cluster_nodes] After BuildClusterJewelGraphs: subGraphs=%d\n", subGraphCount))
+  end
+
+  local clusterNodes = {}
+
+  -- Build lookup: node ID -> socket node ID (from subGraphs)
+  -- subGraphs is keyed by the socket node ID that the cluster is attached to
+  local nodeToSocket = {}
+  if spec.subGraphs then
+    for socketNodeId, subGraph in pairs(spec.subGraphs) do
+      if subGraph.nodes then
+        for _, node in ipairs(subGraph.nodes) do
+          nodeToSocket[node.id] = socketNodeId
+        end
+      end
+    end
+  end
+
+  -- Collect allocated cluster nodes
+  for nodeId, node in pairs(spec.allocNodes) do
+    if nodeId >= 0x10000 then
+      -- This is a cluster node
+      table.insert(clusterNodes, {
+        id = nodeId,
+        name = node.dn or "Unknown",
+        type = node.type or "Normal",  -- Normal, Notable, Socket, Keystone, Mastery
+        stats = node.sd or {},
+        icon = node.icon,
+        x = node.x,  -- Position calculated by tree:ProcessNode()
+        y = node.y,
+        orbit = node.o,
+        orbitIndex = node.oidx,
+        isAllocated = true,
+        socketNodeId = nodeToSocket[nodeId],  -- Which tree socket this cluster is attached to
+      })
+    end
+  end
+
+  -- Also get unallocated cluster nodes from subgraphs (for complete visualization)
+  if spec.subGraphs then
+    for socketNodeId, subGraph in pairs(spec.subGraphs) do
+      if subGraph.nodes then
+        for _, node in ipairs(subGraph.nodes) do
+          -- Only add if not already in allocated nodes
+          if not spec.allocNodes[node.id] then
+            table.insert(clusterNodes, {
+              id = node.id,
+              name = node.dn or "Unknown",
+              type = node.type or "Normal",
+              stats = node.sd or {},
+              icon = node.icon,
+              x = node.x,
+              y = node.y,
+              orbit = node.o,
+              orbitIndex = node.oidx,
+              isAllocated = false,
+              socketNodeId = socketNodeId,  -- Use the subGraph key directly
+            })
+          end
+        end
+      end
+    end
+  end
+
+  return clusterNodes
+end
+
 -- Set tree allocation from parameters
 -- params: { classId, ascendClassId, secondaryAscendClassId?, nodes:[int], masteryEffects?:{[id]=effect}, treeVersion? }
+-- NOTE: If classId/ascendClassId not provided, preserves current class (doesn't reset to Scion)
 function M.set_tree(params)
   if not build or not build.spec then
     return nil, "build/spec not initialized"
@@ -178,9 +297,11 @@ function M.set_tree(params)
   if type(params) ~= 'table' then
     return nil, "invalid params"
   end
-  local classId = tonumber(params.classId or 0) or 0
-  local ascendId = tonumber(params.ascendClassId or 0) or 0
-  local secondaryId = tonumber(params.secondaryAscendClassId or 0) or 0
+  -- Preserve current class if not explicitly provided (don't reset to Scion/0)
+  local spec = build.spec
+  local classId = params.classId ~= nil and tonumber(params.classId) or spec.curClassId or 0
+  local ascendId = params.ascendClassId ~= nil and tonumber(params.ascendClassId) or spec.curAscendClassId or 0
+  local secondaryId = params.secondaryAscendClassId ~= nil and tonumber(params.secondaryAscendClassId) or spec.curSecondaryAscendClassId or 0
   local nodes = {}
   if type(params.nodes) == 'table' then
     for _, v in ipairs(params.nodes) do
@@ -308,33 +429,69 @@ end
 function M.calc_with_gems(params)
   if not build or not build.skillsTab then return nil, 'build not initialized' end
 
-  -- 1. Deep clone socket groups
-  local originalGroups = {}
-  for i, group in ipairs(build.skillsTab.socketGroupList) do
-    originalGroups[i] = deepCopySafe(group)
+  -- 1. Save original gem state (only the fields we modify, preserving references)
+  -- NOTE: We do NOT use deepCopySafe because it strips gemData (userdata) which is critical.
+  -- Instead, we save minimal state and restore it directly.
+  local originalState = {}
+  for groupIdx, group in ipairs(build.skillsTab.socketGroupList) do
+    if group.gemList then
+      originalState[groupIdx] = {}
+      for gemIdx, gem in ipairs(group.gemList) do
+        originalState[groupIdx][gemIdx] = {
+          nameSpec = gem.nameSpec,
+          gemId = gem.gemId,
+          skillId = gem.skillId,
+          gemData = gem.gemData,  -- Keep reference, don't copy
+          level = gem.level,
+          quality = gem.quality,
+          qualityId = gem.qualityId,
+          enabled = gem.enabled,
+          enableGlobal1 = gem.enableGlobal1,
+          enableGlobal2 = gem.enableGlobal2,
+          count = gem.count,
+        }
+      end
+    end
   end
 
   -- 2. Apply gem modifications to LIVE state
   local modified = false
 
   -- Handle removeGems (do first to handle indices correctly)
-  if params and type(params.removeGems) == 'table' then
-    -- Sort by gemIndex descending so removals don't shift indices
-    table.sort(params.removeGems, function(a, b) return a.gemIndex > b.gemIndex end)
-    for _, removal in ipairs(params.removeGems) do
-      local group = build.skillsTab.socketGroupList[removal.groupIndex]
-      if group and group.gemList and group.gemList[removal.gemIndex] then
-        table.remove(group.gemList, removal.gemIndex)
-        modified = true
-      end
-    end
+  -- NOTE: Removals are NOT supported in what-if mode as they would break restoration.
+  -- For now, skip removals and log a warning.
+  if params and type(params.removeGems) == 'table' and #params.removeGems > 0 then
+    -- Removals complicate restoration - skip for now
+    -- TODO: Implement if needed
   end
 
-  -- Helper to find gem data by name (same pattern as add_gem)
-  local function findGemByName(gemName)
+  -- Helper to find gem data by name OR skillId
+  -- Supports:
+  --   - Display name: "Burning Damage Support"
+  --   - nameSpec: "Burning Damage Support"
+  --   - skillId/grantedEffect.id: "SupportBurningDamage"
+  --   - gemId: unique gem identifier
+  local function findGemByNameOrId(identifier)
     if not build.data or not build.data.gems then return nil end
+    if not identifier then return nil end
+
+    local searchTerm = tostring(identifier)
+
     for _, gemData in pairs(build.data.gems) do
-      if gemData.name == gemName or gemData.nameSpec == gemName then
+      -- Try name match first (display name)
+      if gemData.name == searchTerm or gemData.nameSpec == searchTerm then
+        return gemData
+      end
+      -- Try skillId match (grantedEffect.id like "SupportBurningDamage")
+      if gemData.grantedEffect and gemData.grantedEffect.id == searchTerm then
+        return gemData
+      end
+      -- Try grantedEffectId (fallback for some gem types)
+      if gemData.grantedEffectId == searchTerm then
+        return gemData
+      end
+      -- Try gemId match
+      if gemData.id == searchTerm then
         return gemData
       end
     end
@@ -346,7 +503,7 @@ function M.calc_with_gems(params)
     for _, replace in ipairs(params.replaceGems) do
       local group = build.skillsTab.socketGroupList[replace.groupIndex]
       if group and group.gemList and group.gemList[replace.gemIndex] and replace.gem then
-        local gemData = findGemByName(replace.gem.skillId)
+        local gemData = findGemByNameOrId(replace.gem.skillId)
         if gemData then
           local gemInstance = group.gemList[replace.gemIndex]
           gemInstance.nameSpec = gemData.name
@@ -367,7 +524,7 @@ function M.calc_with_gems(params)
     for _, addition in ipairs(params.addGems) do
       local group = build.skillsTab.socketGroupList[addition.groupIndex]
       if group and addition.gem then
-        local gemData = findGemByName(addition.gem.skillId)
+        local gemData = findGemByNameOrId(addition.gem.skillId)
         if gemData then
           if not group.gemList then group.gemList = {} end
           table.insert(group.gemList, {
@@ -402,13 +559,28 @@ function M.calc_with_gems(params)
   local calcFunc, baseOut = build.calcsTab:GetMiscCalculator()
   local out = calcFunc(nil, params and params.useFullDPS)
 
-  -- 5. Restore original socket groups
-  for i, group in ipairs(originalGroups) do
-    build.skillsTab.socketGroupList[i] = group
-  end
-  -- Remove any extra groups added
-  while #build.skillsTab.socketGroupList > #originalGroups do
-    table.remove(build.skillsTab.socketGroupList)
+  -- 5. Restore original gem state
+  for groupIdx, groupState in pairs(originalState) do
+    local group = build.skillsTab.socketGroupList[groupIdx]
+    if group and group.gemList then
+      for gemIdx, gemState in pairs(groupState) do
+        local gem = group.gemList[gemIdx]
+        if gem then
+          -- Restore all saved fields
+          gem.nameSpec = gemState.nameSpec
+          gem.gemId = gemState.gemId
+          gem.skillId = gemState.skillId
+          gem.gemData = gemState.gemData
+          gem.level = gemState.level
+          gem.quality = gemState.quality
+          gem.qualityId = gemState.qualityId
+          gem.enabled = gemState.enabled
+          gem.enableGlobal1 = gemState.enableGlobal1
+          gem.enableGlobal2 = gemState.enableGlobal2
+          gem.count = gemState.count
+        end
+      end
+    end
   end
 
   -- 6. Reprocess to restore original state
@@ -731,6 +903,91 @@ function M.add_item_text(params)
   build.buildFlag = true
   M.get_main_output()
   return { id = item.id, name = item.name, slot = params.slotName or item:GetPrimarySlot() }
+end
+
+-- Batch add multiple items at once (reduces round-trips)
+-- params: { items: [{text: string, slotName?: string, noAutoEquip?: boolean}] }
+-- Returns: { results: [{ok: boolean, id?: number, name?: string, slot?: string, error?: string}] }
+function M.add_items_batch(params)
+  if not build or not build.itemsTab then return nil, 'items not initialized' end
+  if type(params) ~= 'table' or type(params.items) ~= 'table' then return nil, 'missing items array' end
+
+  local results = {}
+  local successCount = 0
+
+  -- Process each item without triggering rebuild after each one
+  for i, itemParams in ipairs(params.items) do
+    local result = { index = i }
+
+    -- Validate item params
+    if type(itemParams) ~= 'table' or type(itemParams.text) ~= 'string' then
+      result.ok = false
+      result.error = 'missing or invalid text'
+      table.insert(results, result)
+      goto continue
+    end
+
+    if #itemParams.text == 0 then
+      result.ok = false
+      result.error = 'item text cannot be empty'
+      table.insert(results, result)
+      goto continue
+    end
+
+    if #itemParams.text > MAX_ITEM_TEXT_LENGTH then
+      result.ok = false
+      result.error = string.format('item text too long (max %d bytes)', MAX_ITEM_TEXT_LENGTH)
+      table.insert(results, result)
+      goto continue
+    end
+
+    -- Try to create and add the item
+    local ok, item = pcall(new, 'Item', itemParams.text)
+    if not ok then
+      result.ok = false
+      result.error = 'invalid item text: ' .. tostring(item)
+      table.insert(results, result)
+      goto continue
+    end
+
+    if not item or not item.baseName then
+      result.ok = false
+      result.error = 'failed to parse item'
+      table.insert(results, result)
+      goto continue
+    end
+
+    -- Successfully created item - add to build
+    item:NormaliseQuality()
+    build.itemsTab:AddItem(item, itemParams.noAutoEquip == true)
+
+    -- Equip to slot if specified (defer PopulateSlots to end)
+    if itemParams.slotName then
+      local slot = tostring(itemParams.slotName)
+      if build.itemsTab.slots[slot] then
+        build.itemsTab.slots[slot]:SetSelItemId(item.id)
+      end
+    end
+
+    result.ok = true
+    result.id = item.id
+    result.name = item.name
+    result.slot = itemParams.slotName or item:GetPrimarySlot()
+    successCount = successCount + 1
+    table.insert(results, result)
+
+    ::continue::
+  end
+
+  -- Only do the expensive operations ONCE at the end
+  if successCount > 0 then
+    build.itemsTab:PopulateSlots()
+    build.itemsTab:AddUndoState()
+    build.buildFlag = true
+    M.get_main_output()
+  end
+
+  return { results = results, successCount = successCount }
 end
 
 function M.set_flask_active(params)
@@ -2015,15 +2272,12 @@ function M.set_jewel(params)
   end
 
   -- Equip the jewel to the socket
+  -- Use socketCtrl directly - it's the slot control for this socket
+  -- SetSelItemId properly updates both spec.jewels[nodeId] and slot.selItemId,
+  -- and triggers BuildClusterJewelGraphs for cluster jewels
   local slotName = socketCtrl.slotName
-  if itemsTab.slots[slotName] then
-    itemsTab.slots[slotName]:SetSelItemId(itemId)
-    itemsTab:PopulateSlots()
-  else
-    -- Fallback: directly set in spec.jewels
-    spec.jewels[nodeId] = itemId
-    spec:BuildClusterJewelGraphs()
-  end
+  socketCtrl:SetSelItemId(itemId)
+  itemsTab:PopulateSlots()
 
   itemsTab:AddUndoState()
   build.buildFlag = true
@@ -2069,14 +2323,10 @@ function M.remove_jewel(params)
   local slotName = socketCtrl.slotName
   local previousJewelId = spec.jewels[nodeId] or 0
 
-  -- Remove the jewel
-  if itemsTab.slots[slotName] then
-    itemsTab.slots[slotName]:SetSelItemId(0)
-    itemsTab:PopulateSlots()
-  else
-    spec.jewels[nodeId] = 0
-    spec:BuildClusterJewelGraphs()
-  end
+  -- Remove the jewel using socketCtrl directly
+  -- SetSelItemId(0) properly clears both spec.jewels[nodeId] and slot.selItemId
+  socketCtrl:SetSelItemId(0)
+  itemsTab:PopulateSlots()
 
   itemsTab:AddUndoState()
   build.buildFlag = true
@@ -2086,6 +2336,120 @@ function M.remove_jewel(params)
     nodeId = nodeId,
     slotName = slotName,
     previousJewelId = previousJewelId,
+  }
+end
+
+-- Get all passive nodes within a jewel radius from a socket
+-- params: { nodeId: number, radiusIndex?: number }
+-- radiusIndex: 1=Small, 2=Medium, 3=Large, 4=VeryLarge, 5=Massive
+-- If radiusIndex is omitted, returns nodes for all radii
+function M.get_nodes_in_radius(params)
+  if not build or not build.spec then
+    return nil, "build/spec not initialized"
+  end
+  if type(params) ~= 'table' then
+    return nil, "invalid params"
+  end
+
+  local nodeId = tonumber(params.nodeId)
+  if not nodeId then
+    return nil, "missing or invalid nodeId"
+  end
+
+  local spec = build.spec
+  local tree = spec.tree or build.tree
+
+  -- Get the socket node
+  local socketNode = tree.nodes[nodeId]
+  if not socketNode then
+    return nil, "nodeId " .. tostring(nodeId) .. " not found in tree"
+  end
+  if not socketNode.isJewelSocket then
+    return nil, "nodeId " .. tostring(nodeId) .. " is not a jewel socket"
+  end
+  if not socketNode.nodesInRadius then
+    return nil, "socket has no radius data (might be a charm socket)"
+  end
+
+  local radiusLabels = { "Small", "Medium", "Large", "Very Large", "Massive" }
+  local results = {}
+
+  local targetRadiusIndex = params.radiusIndex and tonumber(params.radiusIndex) or nil
+
+  for radiusIndex, nodesInThisRadius in ipairs(socketNode.nodesInRadius) do
+    -- Skip if user specified a different radius
+    if targetRadiusIndex and radiusIndex ~= targetRadiusIndex then
+      goto continue
+    end
+
+    -- Only process standard radii (1-5), skip Thread of Hope ring variants (6-10)
+    if radiusIndex > 5 then
+      goto continue
+    end
+
+    local radiusResult = {
+      radiusIndex = radiusIndex,
+      radiusLabel = radiusLabels[radiusIndex] or ("Index " .. radiusIndex),
+      nodes = {}
+    }
+
+    for nodeIdInRadius, node in pairs(nodesInThisRadius) do
+      -- Determine node type
+      local nodeType = "normal"
+      if node.isKeystone then
+        nodeType = "keystone"
+      elseif node.isNotable then
+        nodeType = "notable"
+      elseif node.isJewelSocket then
+        nodeType = "jewel"
+      elseif node.isMastery then
+        nodeType = "mastery"
+      end
+
+      -- Check if node is allocated
+      local isAllocated = spec.allocNodes[nodeIdInRadius] ~= nil
+
+      -- Get node stats
+      local stats = {}
+      if node.sd then
+        for _, stat in ipairs(node.sd) do
+          table.insert(stats, stat)
+        end
+      end
+
+      table.insert(radiusResult.nodes, {
+        id = nodeIdInRadius,
+        name = node.dn or node.name or "Unknown",
+        type = nodeType,
+        isAllocated = isAllocated,
+        stats = stats,
+        x = node.x,
+        y = node.y,
+      })
+    end
+
+    -- Sort nodes by type priority (keystones first, then notables, etc.)
+    local typeOrder = { keystone = 1, notable = 2, jewel = 3, mastery = 4, normal = 5 }
+    table.sort(radiusResult.nodes, function(a, b)
+      local orderA = typeOrder[a.type] or 99
+      local orderB = typeOrder[b.type] or 99
+      if orderA ~= orderB then
+        return orderA < orderB
+      end
+      return a.name < b.name
+    end)
+
+    table.insert(results, radiusResult)
+
+    ::continue::
+  end
+
+  return {
+    socketId = nodeId,
+    socketName = socketNode.dn or socketNode.name or "Jewel Socket",
+    socketX = socketNode.x,
+    socketY = socketNode.y,
+    radii = results,
   }
 end
 

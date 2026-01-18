@@ -317,6 +317,11 @@ if os.getenv('POB_API_STDIO') == '1' or has_flag('--stdio') then
   function loadBuildFromXML(xmlText, name)
     mainObject.main:SetMode("BUILD", false, name or "", xmlText)
     runCallback("OnFrame")
+
+    -- Check for errors
+    if mainObject.promptMsg then
+      io.stderr:write(string.format("[loadBuildFromXML] ERROR: %s\n", tostring(mainObject.promptMsg)))
+    end
   end
   function loadBuildFromJSON(getItemsJSON, getPassiveSkillsJSON)
     mainObject.main:SetMode("BUILD", false, "")
@@ -329,6 +334,8 @@ if os.getenv('POB_API_STDIO') == '1' or has_flag('--stdio') then
   _G.loadBuildFromXML = loadBuildFromXML
   _G.loadBuildFromJSON = loadBuildFromJSON
   _G.build = mainObject.main.modes["BUILD"]
+  _G.mainObject = mainObject  -- Expose for API handlers to refresh _G.build after SetMode
+  _G.runCallback = runCallback  -- Expose runCallback for API handlers
 
   -- Now start the API server
   local srvPath = (POB_SCRIPT_DIR ~= '' and (POB_SCRIPT_DIR .. '/API/Server.lua')) or 'API/Server.lua'

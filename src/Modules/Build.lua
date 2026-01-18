@@ -99,9 +99,15 @@ function buildMode:Init(dbFileName, buildName, buildXML, convertBuild, importLin
 		self.targetVersion = liveTargetVersion
 	end
 	if self.targetVersion ~= liveTargetVersion then
-		self.targetVersion = nil
-		self:OpenConversionPopup()
-		return
+		if os.getenv('POB_API_STDIO') == '1' then
+			io.stderr:write(string.format("[Build] Auto-converting from %s to %s\n",
+				tostring(self.targetVersion), liveTargetVersion))
+			self.targetVersion = liveTargetVersion
+		else
+			self.targetVersion = nil
+			self:OpenConversionPopup()
+			return
+		end
 	end
 
 	self.abortSave = true
