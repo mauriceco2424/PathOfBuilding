@@ -429,11 +429,17 @@ end
 function M.calc_with_gems(params)
   if not build or not build.skillsTab then return nil, 'build not initialized' end
 
+  -- Get the active skill set's socketGroupList (not the top-level reference which may be stale)
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  if not skillSet then return nil, 'active skill set not found' end
+  local socketGroupList = skillSet.socketGroupList
+
   -- 1. Save original gem state (only the fields we modify, preserving references)
   -- NOTE: We do NOT use deepCopySafe because it strips gemData (userdata) which is critical.
   -- Instead, we save minimal state and restore it directly.
   local originalState = {}
-  for groupIdx, group in ipairs(build.skillsTab.socketGroupList) do
+  for groupIdx, group in ipairs(socketGroupList) do
     if group.gemList then
       originalState[groupIdx] = {}
       for gemIdx, gem in ipairs(group.gemList) do
@@ -501,7 +507,7 @@ function M.calc_with_gems(params)
   -- Handle replaceGems
   if params and type(params.replaceGems) == 'table' then
     for _, replace in ipairs(params.replaceGems) do
-      local group = build.skillsTab.socketGroupList[replace.groupIndex]
+      local group = socketGroupList[replace.groupIndex]
       if group and group.gemList and group.gemList[replace.gemIndex] and replace.gem then
         local gemData = findGemByNameOrId(replace.gem.skillId)
         if gemData then
@@ -522,7 +528,7 @@ function M.calc_with_gems(params)
   -- Handle addGems
   if params and type(params.addGems) == 'table' then
     for _, addition in ipairs(params.addGems) do
-      local group = build.skillsTab.socketGroupList[addition.groupIndex]
+      local group = socketGroupList[addition.groupIndex]
       if group and addition.gem then
         local gemData = findGemByNameOrId(addition.gem.skillId)
         if gemData then
@@ -546,22 +552,30 @@ function M.calc_with_gems(params)
     end
   end
 
-  -- 3. Reprocess socket groups if modified
+  -- 3. Capture baseline output BEFORE applying modifications
+  -- GetMiscCalculator creates a snapshot from current (unmodified) build state
+  local baseCalcFunc, baseOut = build.calcsTab:GetMiscCalculator()
+
+  -- 4. Reprocess socket groups if modified and get new output
+  local out
   if modified then
-    for _, group in ipairs(build.skillsTab.socketGroupList) do
+    for _, group in ipairs(socketGroupList) do
       if build.skillsTab.ProcessSocketGroup then
         build.skillsTab:ProcessSocketGroup(group)
       end
     end
+    -- Rebuild the calculator from modified gem state
+    build.calcsTab:BuildOutput()
+    local modCalcFunc, modBaseOut = build.calcsTab:GetMiscCalculator()
+    out = modBaseOut  -- The base output of the modified state IS the modified result
+  else
+    -- No modifications - both base and output are the same
+    out = baseOut
   end
-
-  -- 4. Get calculator and run
-  local calcFunc, baseOut = build.calcsTab:GetMiscCalculator()
-  local out = calcFunc(nil, params and params.useFullDPS)
 
   -- 5. Restore original gem state
   for groupIdx, groupState in pairs(originalState) do
-    local group = build.skillsTab.socketGroupList[groupIdx]
+    local group = socketGroupList[groupIdx]
     if group and group.gemList then
       for gemIdx, gemState in pairs(groupState) do
         local gem = group.gemList[gemIdx]
@@ -584,10 +598,14 @@ function M.calc_with_gems(params)
   end
 
   -- 6. Reprocess to restore original state
-  for _, group in ipairs(build.skillsTab.socketGroupList) do
-    if build.skillsTab.ProcessSocketGroup then
-      build.skillsTab:ProcessSocketGroup(group)
+  if modified then
+    for _, group in ipairs(socketGroupList) do
+      if build.skillsTab.ProcessSocketGroup then
+        build.skillsTab:ProcessSocketGroup(group)
+      end
     end
+    -- Rebuild output to fully restore pre-modification state
+    build.calcsTab:BuildOutput()
   end
 
   return {

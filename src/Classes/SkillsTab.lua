@@ -1096,6 +1096,11 @@ function SkillsTabClass:ProcessSocketGroup(socketGroup)
 			-- Specified by gem/skill name, try to match it
 			-- Used to migrate pre-1.4.20 builds
 			gemInstance.errMsg, gemInstance.gemData = self:FindSkillGem(gemInstance.nameSpec)
+			-- If not found, try without " Support" suffix (gem data stores names without it)
+			if not gemInstance.gemData and gemInstance.nameSpec:match(" Support$") then
+				local baseName = gemInstance.nameSpec:gsub(" Support$", "")
+				gemInstance.errMsg, gemInstance.gemData = self:FindSkillGem(baseName)
+			end
 			gemInstance.gemId = gemInstance.gemData and gemInstance.gemData.id
 			gemInstance.skillId = gemInstance.gemData and gemInstance.gemData.grantedEffectId
 			if gemInstance.gemData then
