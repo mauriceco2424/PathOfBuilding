@@ -441,7 +441,7 @@ function M.calc_with_gems(params)
   local originalState = {}
   for groupIdx, group in ipairs(socketGroupList) do
     if group.gemList then
-      originalState[groupIdx] = {}
+      originalState[groupIdx] = { _originalLength = #group.gemList }
       for gemIdx, gem in ipairs(group.gemList) do
         originalState[groupIdx][gemIdx] = {
           nameSpec = gem.nameSpec,
@@ -508,7 +508,15 @@ function M.calc_with_gems(params)
   if params and type(params.replaceGems) == 'table' then
     for _, replace in ipairs(params.replaceGems) do
       local group = socketGroupList[replace.groupIndex]
-      if group and group.gemList and group.gemList[replace.gemIndex] and replace.gem then
+      if not group then
+        ConPrintf("[calc_with_gems] WARNING: groupIndex %s not found (socketGroupList has %d groups)", tostring(replace.groupIndex), #socketGroupList)
+      elseif not group.gemList then
+        ConPrintf("[calc_with_gems] WARNING: group %d has no gemList", replace.groupIndex)
+      elseif not group.gemList[replace.gemIndex] then
+        ConPrintf("[calc_with_gems] WARNING: gemIndex %s not found in group %d (gemList has %d gems)", tostring(replace.gemIndex), replace.groupIndex, #group.gemList)
+      elseif not replace.gem then
+        ConPrintf("[calc_with_gems] WARNING: replace entry has no gem spec")
+      else
         local gemData = findGemByNameOrId(replace.gem.skillId)
         if gemData then
           local gemInstance = group.gemList[replace.gemIndex]
@@ -520,6 +528,8 @@ function M.calc_with_gems(params)
           gemInstance.quality = replace.gem.quality or 0
           gemInstance.qualityId = replace.gem.qualityId or "Default"
           modified = true
+        else
+          ConPrintf("[calc_with_gems] WARNING: gem '%s' not found in gem database", tostring(replace.gem.skillId))
         end
       end
     end
@@ -555,6 +565,7 @@ function M.calc_with_gems(params)
   -- 3. Capture baseline output BEFORE applying modifications
   -- GetMiscCalculator creates a snapshot from current (unmodified) build state
   local baseCalcFunc, baseOut = build.calcsTab:GetMiscCalculator()
+  baseOut = baseCalcFunc({}, params and params.useFullDPS)
 
   -- 4. Reprocess socket groups if modified and get new output
   local out
@@ -567,7 +578,7 @@ function M.calc_with_gems(params)
     -- Rebuild the calculator from modified gem state
     build.calcsTab:BuildOutput()
     local modCalcFunc, modBaseOut = build.calcsTab:GetMiscCalculator()
-    out = modBaseOut  -- The base output of the modified state IS the modified result
+    out = modCalcFunc({}, params and params.useFullDPS)  -- Must call calcFunc to get useFullDPS output
   else
     -- No modifications - both base and output are the same
     out = baseOut
@@ -592,6 +603,19 @@ function M.calc_with_gems(params)
           gem.enableGlobal1 = gemState.enableGlobal1
           gem.enableGlobal2 = gemState.enableGlobal2
           gem.count = gemState.count
+        end
+      end
+    end
+  end
+
+  -- 5b. Remove any gems that were added (truncate to original length)
+  for groupIdx, groupState in pairs(originalState) do
+    local group = socketGroupList[groupIdx]
+    if group and group.gemList then
+      local originalLen = groupState._originalLength
+      if originalLen then
+        while #group.gemList > originalLen do
+          table.remove(group.gemList)
         end
       end
     end
