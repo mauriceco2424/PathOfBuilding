@@ -138,7 +138,7 @@ function M.get_full_calcs()
     skillOutput = deepCopySafe(skillOutput),
     breakdown = deepCopySafe(breakdown),
     config = deepCopySafe(configInput),
-    skills = deepCopySafe(socketGroups),
+    skills = M.get_skills(),
     activeSkill = activeSkillName,
   }
 
