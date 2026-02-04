@@ -778,8 +778,15 @@ end
 -- Skills API
 function M.get_skills()
   if not build or not build.skillsTab or not build.calcsTab then return nil, 'skills not initialized' end
+
+  -- Use the active skill set's socketGroupList, consistent with add_gem/remove_gem
+  -- The top-level build.skillsTab.socketGroupList may be stale and have different indices
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  local socketGroupList = skillSet and skillSet.socketGroupList or build.skillsTab.socketGroupList or {}
+
   local groups = {}
-  for idx, g in ipairs(build.skillsTab.socketGroupList or {}) do
+  for idx, g in ipairs(socketGroupList) do
     -- Get active skill names from displaySkillList
     local names = {}
     if g.displaySkillList then
