@@ -2976,7 +2976,7 @@ function calcs.perform(env, skipEHP)
 
 	-- Set curse limit
 	output.EnemyCurseLimit = modDB:Flag(nil, "CurseLimitIsMaximumPowerCharges") and output.PowerChargesMax or modDB:Sum("BASE", nil, "EnemyCurseLimit")
-	curses.limit = output.EnemyCurseLimit
+	curses.limit = env.configInput.overrideCurseLimit or output.EnemyCurseLimit
 	buffExports["CurseLimit"] = curses.limit
 	-- Assign curses to slots
 	local curseSlots = { }
@@ -3071,6 +3071,18 @@ function calcs.perform(env, skipEHP)
 				end
 				if not skipAddingCurse then
 					curseSlots[#curseSlots + 1] = curse
+				end
+			end
+		end
+	end
+
+	-- API: Remove disabled curses from resolved slots (for A/B comparison)
+	if env.configInput.disabledCurses then
+		for i = #curseSlots, 1, -1 do
+			for _, disabled in ipairs(env.configInput.disabledCurses) do
+				if curseSlots[i].name == disabled then
+					table.remove(curseSlots, i)
+					break
 				end
 			end
 		end

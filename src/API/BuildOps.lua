@@ -769,6 +769,20 @@ function M.set_config(params)
   -- Custom modifiers
   if params.customMods ~= nil then input.customMods = tostring(params.customMods); changed = true end
 
+  -- Curse override for A/B testing
+  if params.disabledCurses ~= nil then
+    if type(params.disabledCurses) == 'table' then
+      input.disabledCurses = params.disabledCurses
+    else
+      input.disabledCurses = nil
+    end
+    changed = true
+  end
+  if params.overrideCurseLimit ~= nil then
+    input.overrideCurseLimit = tonumber(params.overrideCurseLimit)
+    changed = true
+  end
+
   if changed and build.configTab.BuildModList then build.configTab:BuildModList() end
   M.get_main_output()
   return true
