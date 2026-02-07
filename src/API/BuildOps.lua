@@ -769,6 +769,13 @@ function M.set_config(params)
   -- Custom modifiers
   if params.customMods ~= nil then input.customMods = tostring(params.customMods); changed = true end
 
+  -- Reset API-specific config (curse overrides, etc.)
+  if params.resetApiConfig then
+    input.disabledCurses = nil
+    input.overrideCurseLimit = nil
+    changed = true
+  end
+
   -- Curse override for A/B testing
   if params.disabledCurses ~= nil then
     if type(params.disabledCurses) == 'table' then
