@@ -3,6 +3,8 @@
 
 local M = {}
 
+local t_insert = table.insert
+
 -- Constants
 local MIN_PLAYER_LEVEL = 1
 local MAX_PLAYER_LEVEL = 100
@@ -114,6 +116,38 @@ function M.get_full_calcs()
   -- Extract all calculation outputs
   local mainOutput = calcsTab.mainOutput or {}
   local output = calcsTab.output or {}
+
+  -- Inject CurseList/BuffList into mainOutput (normally only built in CALCS mode)
+  -- env.curseSlots and env.debuffs ARE populated in MAIN mode by CalcPerform.lua
+  local mainEnv = calcsTab.mainEnv
+  if mainEnv and not mainOutput.CurseList then
+    -- CurseList: debuffs + curse slots
+    local curseNames = {}
+    if mainEnv.debuffs then
+      for name, _ in pairs(mainEnv.debuffs) do
+        t_insert(curseNames, name)
+      end
+    end
+    if mainEnv.curseSlots then
+      for _, slot in ipairs(mainEnv.curseSlots) do
+        if slot.name then
+          t_insert(curseNames, slot.name)
+        end
+      end
+    end
+    table.sort(curseNames)
+    mainOutput.CurseList = table.concat(curseNames, ", ")
+  end
+
+  if mainEnv and mainEnv.buffs and not mainOutput.BuffList then
+    local buffNames = {}
+    for name, _ in pairs(mainEnv.buffs) do
+      t_insert(buffNames, name)
+    end
+    table.sort(buffNames)
+    mainOutput.BuffList = table.concat(buffNames, ", ")
+  end
+
   local skillOutput = calcsTab.skillOutput or {}
   local mainOutputCopy = deepCopySafe(mainOutput)
   local breakdown = calcsTab.breakdown or {}
