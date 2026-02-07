@@ -3078,24 +3078,14 @@ function calcs.perform(env, skipEHP)
 
 	-- API: Remove disabled curses from resolved slots (for A/B comparison)
 	if env.configInput.disabledCurses then
-		print("[DEBUG-CURSE] disabledCurses found, type: " .. type(env.configInput.disabledCurses))
-		for _, d in ipairs(env.configInput.disabledCurses) do
-			print("[DEBUG-CURSE]   want to disable: '" .. tostring(d) .. "'")
-		end
-		print("[DEBUG-CURSE] curseSlots before removal: " .. #curseSlots)
-		for idx, slot in ipairs(curseSlots) do
-			print("[DEBUG-CURSE]   slot[" .. idx .. "] name='" .. tostring(slot.name) .. "'")
-		end
 		for i = #curseSlots, 1, -1 do
 			for _, disabled in ipairs(env.configInput.disabledCurses) do
 				if curseSlots[i].name == disabled then
-					print("[DEBUG-CURSE] REMOVING curse: '" .. curseSlots[i].name .. "'")
 					table.remove(curseSlots, i)
 					break
 				end
 			end
 		end
-		print("[DEBUG-CURSE] curseSlots after removal: " .. #curseSlots)
 	end
 
 	-- Process guard buffs
