@@ -200,6 +200,65 @@ function M.get_tree()
     out.masteryEffects[mastery] = effect
   end
   table.sort(out.nodes)
+
+  -- Point budget data: use PoB's built-in CountAllocNodes for accurate counts
+  if spec.CountAllocNodes then
+    local used, ascUsed, secondaryAscUsed, sockets = spec:CountAllocNodes()
+    out.passivePointsUsed = used
+    out.ascendancyPointsUsed = ascUsed
+    out.secondaryAscendancyPointsUsed = secondaryAscUsed
+  else
+    -- Fallback: manually count by iterating allocNodes
+    local used, ascUsed = 0, 0
+    for _, node in pairs(spec.allocNodes or {}) do
+      if node.type ~= "ClassStart" and node.type ~= "AscendClassStart" then
+        if node.ascendancyName then
+          ascUsed = ascUsed + 1
+        else
+          used = used + 1
+        end
+      end
+    end
+    out.passivePointsUsed = used
+    out.ascendancyPointsUsed = ascUsed
+  end
+
+  -- Total available passive points from PoB's own calculation
+  -- ExtraPoints includes bandit bonus (+1 for killing all bandits) and item grants
+  local extra = 0
+  if build.calcsTab and build.calcsTab.mainOutput then
+    extra = build.calcsTab.mainOutput.ExtraPoints or 0
+  end
+  -- Quest points from the acts table (23 at endgame)
+  -- PoB's formula: usedMax = 99 + 23 + extra (for level 100)
+  -- For current level: (level - 1) + questPointsForAct + extraIfPastAct2
+  local charLevel = build.characterLevel or 1
+  -- Use the acts table to find quest points for current progress
+  local acts = {
+    { level = 1, questPoints = 0 },
+    { level = 12, questPoints = 2 },
+    { level = 22, questPoints = 4 },
+    { level = 32, questPoints = 6 },
+    { level = 40, questPoints = 7 },
+    { level = 44, questPoints = 9 },
+    { level = 50, questPoints = 12 },
+    { level = 54, questPoints = 15 },
+    { level = 60, questPoints = 18 },
+    { level = 64, questPoints = 20 },
+    { level = 67, questPoints = 23 },
+  }
+  local questPoints = 0
+  local pastAct2 = false
+  for i = #acts, 1, -1 do
+    if charLevel >= acts[i].level then
+      questPoints = acts[i].questPoints
+      pastAct2 = i > 2
+      break
+    end
+  end
+  local actExtra = pastAct2 and extra or 0
+  out.totalPassivePoints = (charLevel - 1) + questPoints + actExtra
+
   return out
 end
 
