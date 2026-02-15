@@ -643,6 +643,22 @@ function calcs.initEnv(build, mode, override, specEnv)
 			nodes = copyTable(env.spec.allocNodes, true)
 		end
 		env.allocNodes = nodes
+		-- Apply mastery effect overrides: clone mastery nodes and swap their stat descriptions
+		if override.masteryOverrides then
+			for nodeId, effectId in pairs(override.masteryOverrides) do
+				local node = env.allocNodes[nodeId]
+				if node and node.type == "Mastery" then
+					local effect = env.spec.tree.masteryEffects[effectId]
+					if effect and effect.sd then
+						local tempNode = copyTable(node, true)
+						tempNode.sd = effect.sd
+						tempNode.allMasteryOptions = false
+						env.spec.tree:ProcessStats(tempNode)
+						env.allocNodes[nodeId] = tempNode
+					end
+				end
+			end
+		end
 		env.initialNodeModDB = calcs.buildModListForNodeList(env, env.allocNodes, true)
 		modLib.mergeKeystones(env, env.initialNodeModDB)
 	end

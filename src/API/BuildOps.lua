@@ -482,7 +482,7 @@ end
 
 
 -- Calculate what-if scenario without persisting changes
--- params: { addNodes?: number[], removeNodes?: number[], useFullDPS?: boolean }
+-- params: { addNodes?: number[], removeNodes?: number[], masteryOverrides?: { [nodeId]: effectId }, useFullDPS?: boolean }
 -- Returns: { output = {...}, baseOutput = {...} } or nil, error
 function M.calc_with(params)
   if not build or not build.calcsTab then return nil, 'build not initialized' end
@@ -500,6 +500,16 @@ function M.calc_with(params)
     for _, id in ipairs(params.removeNodes) do
       local n = build.spec and build.spec.nodes and build.spec.nodes[tonumber(id)]
       if n then override.removeNodes[n] = true end
+    end
+  end
+  if params and type(params.masteryOverrides) == 'table' then
+    override.masteryOverrides = {}
+    for nodeIdStr, effectId in pairs(params.masteryOverrides) do
+      local nid = tonumber(nodeIdStr)
+      local eid = tonumber(effectId)
+      if nid and eid then
+        override.masteryOverrides[nid] = eid
+      end
     end
   end
   local out = calcFunc(override, params and params.useFullDPS)

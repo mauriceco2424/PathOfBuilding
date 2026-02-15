@@ -382,6 +382,48 @@ handlers.get_nodes_in_radius = function(params)
   return { ok = true, result = res }
 end
 
+handlers.get_mastery_alternatives = function(params)
+  local build = _G.build
+  if not build or not build.spec then
+    return { ok = false, error = 'no build loaded' }
+  end
+
+  local result = {}
+  for nodeId, node in pairs(build.spec.allocNodes) do
+    if node.type == "Mastery" and node.masteryEffects then
+      local currentEffectId = build.spec.masterySelections and build.spec.masterySelections[nodeId] or nil
+      local entry = {
+        nodeId = nodeId,
+        name = node.name or ("Mastery " .. nodeId),
+        currentEffectId = currentEffectId,
+        currentStats = {},
+        alternatives = {},
+      }
+      -- Get current effect stats
+      if currentEffectId and build.spec.tree and build.spec.tree.masteryEffects then
+        local currentEffect = build.spec.tree.masteryEffects[currentEffectId]
+        if currentEffect and currentEffect.sd then
+          entry.currentStats = currentEffect.sd
+        end
+      end
+      -- Get all alternative effects
+      for _, effect in ipairs(node.masteryEffects) do
+        if effect.effect ~= currentEffectId then
+          local resolved = build.spec.tree and build.spec.tree.masteryEffects and build.spec.tree.masteryEffects[effect.effect]
+          table.insert(entry.alternatives, {
+            effectId = effect.effect,
+            stats = resolved and resolved.sd or effect.stats or {},
+          })
+        end
+      end
+      if #entry.alternatives > 0 then
+        result[tostring(nodeId)] = entry
+      end
+    end
+  end
+  return { ok = true, result = result }
+end
+
 handlers.gc_collect = function(params)
   collectgarbage("collect")
   collectgarbage("collect")
