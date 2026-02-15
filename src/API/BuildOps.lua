@@ -1630,7 +1630,7 @@ end
 
 
 -- Search for passive tree nodes by keyword
--- params: { keyword: string, nodeType?: string ('normal'|'notable'|'keystone'), maxResults?: number, includeAllocated?: boolean }
+-- params: { keyword: string, nodeType?: string ('normal'|'notable'|'keystone'), maxResults?: number, includeAllocated?: boolean, allocatedOnly?: boolean }
 function M.search_nodes(params)
   if not build or not build.spec then return nil, 'build/spec not initialized' end
   if type(params) ~= 'table' or type(params.keyword) ~= 'string' then
@@ -1641,6 +1641,7 @@ function M.search_nodes(params)
   local nodeType = params.nodeType and params.nodeType:lower() or nil
   local maxResults = tonumber(params.maxResults) or 50
   local includeAllocated = params.includeAllocated ~= false
+  local allocatedOnly = params.allocatedOnly == true
 
   local results = {}
   local count = 0
@@ -1653,12 +1654,15 @@ function M.search_nodes(params)
     end
   end
 
-  -- Search through all nodes
-  for id, node in pairs(build.spec.nodes) do
+  -- Choose iteration source: allocatedOnly uses allocNodes (much smaller set, guaranteed complete)
+  local nodeSource = allocatedOnly and build.spec.allocNodes or build.spec.nodes
+
+  -- Search through selected nodes
+  for id, node in pairs(nodeSource) do
     if count >= maxResults then break end
 
-    -- Skip if already allocated and we don't want allocated nodes
-    if not includeAllocated and allocatedSet[id] then
+    -- Skip if already allocated and we don't want allocated nodes (only relevant when not allocatedOnly)
+    if not allocatedOnly and not includeAllocated and allocatedSet[id] then
       goto continue
     end
 

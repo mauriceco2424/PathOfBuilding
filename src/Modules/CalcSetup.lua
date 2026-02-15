@@ -646,15 +646,19 @@ function calcs.initEnv(build, mode, override, specEnv)
 		-- Apply mastery effect overrides: clone mastery nodes and swap their stat descriptions
 		if override.masteryOverrides then
 			for nodeId, effectId in pairs(override.masteryOverrides) do
-				local node = env.allocNodes[nodeId]
+				local nid = tonumber(nodeId)
+				local node = nid and env.allocNodes[nid]
 				if node and node.type == "Mastery" then
 					local effect = env.spec.tree.masteryEffects[effectId]
 					if effect and effect.sd then
+						-- Shallow-copy direct fields and preserve the metatable so inherited
+						-- fields (id, type, skill, etc.) remain accessible via __index.
 						local tempNode = copyTable(node, true)
+						setmetatable(tempNode, getmetatable(node))
 						tempNode.sd = effect.sd
 						tempNode.allMasteryOptions = false
 						env.spec.tree:ProcessStats(tempNode)
-						env.allocNodes[nodeId] = tempNode
+						env.allocNodes[nid] = tempNode
 					end
 				end
 			end
