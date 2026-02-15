@@ -65,6 +65,20 @@ local function version_meta()
   }
 end
 
+-- Memory-aware GC: prevents LuaJIT OOM by collecting when memory exceeds threshold.
+-- collectgarbage("count") is essentially free (reads an internal counter).
+-- Full GC only runs when threshold is exceeded (~20-50ms, rare).
+local GC_THRESHOLD_KB = 512000  -- 500MB
+local function checkMemoryPressure()
+  local memKB = collectgarbage("count")
+  if memKB > GC_THRESHOLD_KB then
+    collectgarbage("collect")
+    collectgarbage("collect")
+    local afterKB = collectgarbage("count")
+    print(string.format("[GC] Memory pressure: %.1fMB -> %.1fMB", memKB/1024, afterKB/1024))
+  end
+end
+
 local handlers = {}
 
 handlers.ping = function(params)
@@ -84,6 +98,7 @@ handlers.new_build = function(params)
 end
 
 handlers.load_build_xml = function(params)
+  checkMemoryPressure()
   if not params or type(params.xml) ~= 'string' then
     return { ok = false, error = 'missing xml' }
   end
@@ -132,6 +147,7 @@ handlers.get_stats = function(params)
 end
 
 handlers.get_full_calcs = function(params)
+  checkMemoryPressure()
   local calcs, err = BuildOps.get_full_calcs()
   if not calcs then
     return { ok = false, error = err }
@@ -173,6 +189,7 @@ handlers.set_main_selection = function(params)
 end
 
 handlers.set_tree = function(params)
+  checkMemoryPressure()
   local ok2, err = BuildOps.set_tree(params or {})
   if not ok2 then
     return { ok = false, error = err }
@@ -228,12 +245,14 @@ handlers.update_tree_delta = function(params)
 end
 
 handlers.calc_with = function(params)
+  checkMemoryPressure()
   local result, err = BuildOps.calc_with(params or {})
   if not result then return { ok = false, error = err } end
   return { ok = true, output = result.output, baseOutput = result.baseOutput }
 end
 
 handlers.calc_with_gems = function(params)
+  checkMemoryPressure()
   local result, err = BuildOps.calc_with_gems(params or {})
   if not result then return { ok = false, error = err } end
   return { ok = true, output = result.output, baseOutput = result.baseOutput }
@@ -301,12 +320,14 @@ handlers.search_nodes = function(params)
 end
 
 handlers.find_path = function(params)
+  checkMemoryPressure()
   local res, err = BuildOps.find_path(params or {})
   if not res then return { ok = false, error = err or 'failed to find path' } end
   return { ok = true, result = res }
 end
 
 handlers.generate_trade_query = function(params)
+  checkMemoryPressure()
   local result, err = BuildOps.generate_trade_query(params or {})
   if not result then return { ok = false, error = err or 'failed to generate trade query' } end
   return { ok = true, query = result.query, modWeights = result.modWeights, itemCategory = result.itemCategory, itemCategoryQueryStr = result.itemCategoryQueryStr, currentStatDiff = result.currentStatDiff, minWeight = result.minWeight }
@@ -359,6 +380,13 @@ handlers.get_nodes_in_radius = function(params)
   local res, err = BuildOps.get_nodes_in_radius(params or {})
   if not res then return { ok = false, error = err or 'failed to get nodes in radius' } end
   return { ok = true, result = res }
+end
+
+handlers.gc_collect = function(params)
+  collectgarbage("collect")
+  collectgarbage("collect")
+  local memoryKB = collectgarbage("count")
+  return { ok = true, memoryKB = memoryKB }
 end
 
 return {
