@@ -482,7 +482,7 @@ end
 
 
 -- Calculate what-if scenario without persisting changes
--- params: { addNodes?: number[], removeNodes?: number[], masteryOverrides?: { [nodeId]: effectId }, useFullDPS?: boolean }
+-- params: { addNodes?: number[], removeNodes?: number[], masteryOverrides?: { [nodeId]: effectId }, conditions?: string[], useFullDPS?: boolean }
 -- Returns: { output = {...}, baseOutput = {...} } or nil, error
 function M.calc_with(params)
   if not build or not build.calcsTab then return nil, 'build not initialized' end
@@ -512,6 +512,9 @@ function M.calc_with(params)
       end
     end
   end
+  if params and type(params.conditions) == 'table' then
+    override.conditions = params.conditions
+  end
   local out = calcFunc(override, params and params.useFullDPS)
   -- Use deepCopySafe to strip circular references and non-serializable values
   return {
@@ -526,6 +529,7 @@ end
 --   addGems?: { groupIndex: number, gem: { skillId: string, level?: number, quality?: number, qualityId?: string } }[],
 --   removeGems?: { groupIndex: number, gemIndex: number }[],
 --   replaceGems?: { groupIndex: number, gemIndex: number, gem: { skillId: string, level?: number, quality?: number, qualityId?: string } }[],
+--   conditions?: string[],
 --   useFullDPS?: boolean
 -- }
 -- Returns: { output = {...}, baseOutput = {...} } or nil, error
@@ -668,7 +672,11 @@ function M.calc_with_gems(params)
   -- 3. Capture baseline output BEFORE applying modifications
   -- GetMiscCalculator creates a snapshot from current (unmodified) build state
   local baseCalcFunc, baseOut = build.calcsTab:GetMiscCalculator()
-  baseOut = baseCalcFunc({}, params and params.useFullDPS)
+  local condOverride = {}
+  if params and type(params.conditions) == 'table' then
+    condOverride.conditions = params.conditions
+  end
+  baseOut = baseCalcFunc(condOverride, params and params.useFullDPS)
 
   -- 4. Reprocess socket groups if modified and get new output
   local out
@@ -681,7 +689,7 @@ function M.calc_with_gems(params)
     -- Rebuild the calculator from modified gem state
     build.calcsTab:BuildOutput()
     local modCalcFunc, modBaseOut = build.calcsTab:GetMiscCalculator()
-    out = modCalcFunc({}, params and params.useFullDPS)  -- Must call calcFunc to get useFullDPS output
+    out = modCalcFunc(condOverride, params and params.useFullDPS)  -- Must call calcFunc to get useFullDPS output
   else
     -- No modifications - both base and output are the same
     out = baseOut
