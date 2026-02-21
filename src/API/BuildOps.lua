@@ -1147,6 +1147,11 @@ function M.add_items_batch(params)
       local slot = tostring(itemParams.slotName)
       if build.itemsTab.slots[slot] then
         build.itemsTab.slots[slot]:SetSelItemId(item.id)
+        -- Auto-activate flasks when equipped via API
+        if slot:match('^Flask %d$') and build.itemsTab.activeItemSet
+            and build.itemsTab.activeItemSet[slot] then
+          build.itemsTab.activeItemSet[slot].active = true
+        end
       end
     end
 
