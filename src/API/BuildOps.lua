@@ -1244,6 +1244,9 @@ function M.get_items()
           type = it.type,
           rarity = it.rarity,
           raw = it.raw,
+          -- Jewel radius metadata (used for Thread of Hope / Timeless rendering)
+          jewelRadiusLabel = it.jewelRadiusLabel,
+          jewelRadiusIndex = it.jewelRadiusIndex,
           -- Item metadata
           itemLevel = it.itemLevel,
           quality = it.quality,
