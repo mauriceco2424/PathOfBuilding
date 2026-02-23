@@ -345,6 +345,12 @@ handlers.set_skill_config = function(params)
   return { ok = true, varName = res.varName, value = res.value }
 end
 
+handlers.set_batch_skill_config = function(params)
+  local res, err = BuildOps.set_batch_skill_config(params or {})
+  if not res then return { ok = false, error = err or 'failed to batch set skill config' } end
+  return { ok = true, applied = res.applied, count = res.count }
+end
+
 handlers.load_build_json = function(params)
   if not params or type(params.itemsJson) ~= 'string' or type(params.passiveSkillsJson) ~= 'string' then
     return { ok = false, error = 'missing itemsJson or passiveSkillsJson' }

@@ -2281,6 +2281,38 @@ function M.set_skill_config(params)
   return { ok = true, varName = params.varName, value = params.value }
 end
 
+-- Batch set multiple skill-specific config variables in one call, rebuild once
+-- params: { configs: { { varName: string, value: any }, ... } }
+function M.set_batch_skill_config(params)
+  if not build or not build.configTab then
+    return nil, 'build/config not initialized'
+  end
+  if type(params) ~= 'table' or type(params.configs) ~= 'table' then
+    return nil, 'invalid params: expected { configs: [...] }'
+  end
+
+  local input = build.configTab.input or {}
+  build.configTab.input = input
+  local applied = {}
+
+  for _, entry in ipairs(params.configs) do
+    if type(entry.varName) == 'string' and entry.varName ~= '' and entry.value ~= nil then
+      input[entry.varName] = entry.value
+      applied[#applied + 1] = { varName = entry.varName, value = entry.value }
+    end
+  end
+
+  -- Rebuild once after all vars are set
+  if #applied > 0 then
+    if build.configTab.BuildModList then
+      build.configTab:BuildModList()
+    end
+    M.get_main_output()
+  end
+
+  return { ok = true, applied = applied, count = #applied }
+end
+
 -- Get aggregated stats from passive tree only
 -- Uses source filtering to extract tree-specific modifiers
 function M.get_tree_stats()
