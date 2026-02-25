@@ -1393,6 +1393,22 @@ function M.get_items()
           }
         end
 
+        -- Flask recovery stats (life, mana, duration, charges)
+        if it.flaskData then
+          entry.flaskData = {
+            lifeTotal = it.flaskData.lifeTotal,
+            lifeGradual = it.flaskData.lifeGradual,
+            lifeInstant = it.flaskData.lifeInstant,
+            manaTotal = it.flaskData.manaTotal,
+            manaGradual = it.flaskData.manaGradual,
+            manaInstant = it.flaskData.manaInstant,
+            duration = it.flaskData.duration,
+            chargesMax = it.flaskData.chargesMax,
+            chargesUsed = it.flaskData.chargesUsed,
+            instantPerc = it.flaskData.instantPerc,
+          }
+        end
+
         -- Flask/Tincture activation flag stored in activeItemSet
         local set = itemsTab.activeItemSet
         if set and set[slotName] and set[slotName].active ~= nil then
