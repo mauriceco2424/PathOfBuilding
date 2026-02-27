@@ -1606,6 +1606,8 @@ function PassiveSpecClass:BuildSubgraph(jewel, parentSocket, id, upSize, importe
 		group = { oo = { } },
 		connectors = { },
 		parentSocket = parentSocket,
+		clusterSize = clusterJewel.size,
+		clusterSizeIndex = clusterJewel.sizeIndex,
 	}
 
 	-- Make id for this subgraph (and nodes)

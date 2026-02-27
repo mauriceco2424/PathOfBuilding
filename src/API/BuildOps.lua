@@ -271,6 +271,42 @@ function M.get_cluster_nodes()
   end
 
   local spec = build.spec
+  local function collectLinks(node)
+    local links = {}
+    local seen = {}
+    if node and node.linked then
+      for _, linkedNode in ipairs(node.linked) do
+        if linkedNode and linkedNode.id and not seen[linkedNode.id] then
+          seen[linkedNode.id] = true
+          table.insert(links, linkedNode.id)
+        end
+      end
+    end
+    table.sort(links)
+    return links
+  end
+
+  local function deriveClusterSize(subGraph)
+    if subGraph and subGraph.clusterSize then
+      return subGraph.clusterSize
+    end
+
+    if subGraph and subGraph.nodes then
+      for _, node in ipairs(subGraph.nodes) do
+        if node and node.type ~= "Mastery" and node.o ~= nil then
+          if node.o >= 3 then
+            return "Large"
+          elseif node.o >= 2 then
+            return "Medium"
+          else
+            return "Small"
+          end
+        end
+      end
+    end
+
+    return "Small"
+  end
 
   -- Debug: Check what jewels are equipped in sockets
   local jewelCount = 0
@@ -318,14 +354,25 @@ function M.get_cluster_nodes()
 
   local clusterNodes = {}
 
-  -- Build lookup: node ID -> socket node ID (from subGraphs)
-  -- subGraphs is keyed by the socket node ID that the cluster is attached to
-  local nodeToSocket = {}
+  -- Build lookup: node ID -> real cluster metadata (parent socket, group center, links).
+  -- spec.subGraphs is keyed by a synthetic subgraph/entrance identifier, not the parent socket.
+  local nodeMetadata = {}
   if spec.subGraphs then
-    for socketNodeId, subGraph in pairs(spec.subGraphs) do
+    for subGraphId, subGraph in pairs(spec.subGraphs) do
+      local parentSocketId = subGraph.parentSocket and subGraph.parentSocket.id or nil
+      local groupX = subGraph.group and subGraph.group.x or nil
+      local groupY = subGraph.group and subGraph.group.y or nil
+      local clusterSize = deriveClusterSize(subGraph)
       if subGraph.nodes then
         for _, node in ipairs(subGraph.nodes) do
-          nodeToSocket[node.id] = socketNodeId
+          nodeMetadata[node.id] = {
+            socketNodeId = parentSocketId,
+            groupX = groupX,
+            groupY = groupY,
+            clusterSize = clusterSize,
+            subgraphId = subGraphId,
+            links = collectLinks(node),
+          }
         end
       end
     end
@@ -335,6 +382,7 @@ function M.get_cluster_nodes()
   for nodeId, node in pairs(spec.allocNodes) do
     if nodeId >= 0x10000 then
       -- This is a cluster node
+      local metadata = nodeMetadata[nodeId] or {}
       table.insert(clusterNodes, {
         id = nodeId,
         name = node.dn or "Unknown",
@@ -346,18 +394,24 @@ function M.get_cluster_nodes()
         orbit = node.o,
         orbitIndex = node.oidx,
         isAllocated = true,
-        socketNodeId = nodeToSocket[nodeId],  -- Which tree socket this cluster is attached to
+        socketNodeId = metadata.socketNodeId,  -- The parent socket this cluster is attached to
+        clusterSize = metadata.clusterSize,
+        groupX = metadata.groupX,
+        groupY = metadata.groupY,
+        links = metadata.links or {},
+        subgraphId = metadata.subgraphId,
       })
     end
   end
 
   -- Also get unallocated cluster nodes from subgraphs (for complete visualization)
   if spec.subGraphs then
-    for socketNodeId, subGraph in pairs(spec.subGraphs) do
+    for _, subGraph in pairs(spec.subGraphs) do
       if subGraph.nodes then
         for _, node in ipairs(subGraph.nodes) do
           -- Only add if not already in allocated nodes
           if not spec.allocNodes[node.id] then
+            local metadata = nodeMetadata[node.id] or {}
             table.insert(clusterNodes, {
               id = node.id,
               name = node.dn or "Unknown",
@@ -369,7 +423,12 @@ function M.get_cluster_nodes()
               orbit = node.o,
               orbitIndex = node.oidx,
               isAllocated = false,
-              socketNodeId = socketNodeId,  -- Use the subGraph key directly
+              socketNodeId = metadata.socketNodeId,
+              clusterSize = metadata.clusterSize,
+              groupX = metadata.groupX,
+              groupY = metadata.groupY,
+              links = metadata.links or {},
+              subgraphId = metadata.subgraphId,
             })
           end
         end
