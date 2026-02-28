@@ -3,7 +3,7 @@
 **Fork Owner**: mauriceco2424
 **Fork URL**: https://github.com/mauriceco2424/PathOfBuilding
 **Direct Upstream**: https://github.com/PathOfBuildingCommunity/PathOfBuilding (official)
-**Current Version**: v2.59.2
+**Current Version**: v2.60.0
 
 ---
 
@@ -26,7 +26,7 @@ npm run pob:check-version  # Check current vs latest version
 ## Architecture Overview
 
 ```
-PathOfBuildingCommunity/PathOfBuilding (official PoB - releases like v2.59.2)
+PathOfBuildingCommunity/PathOfBuilding (official PoB - releases like v2.60.0)
            ↓ (direct merge via community remote)
 mauriceco2424/PathOfBuilding (our fork with headless API layer)
            ↓
@@ -55,9 +55,9 @@ Our fork adds a complete headless API layer that doesn't exist in the official P
 | What-if | `calc_with()`, `calc_with_gems()` |
 | Build Info | `get_build_info()`, `export_build_xml()`, `set_level()` |
 
-### Why Merges Are Clean
+### Why Merges Are Usually Clean
 
-Since our API files (`src/API/*`, `src/HeadlessWrapper.lua`) don't exist in the official PoB repository, merging upstream updates typically has **no conflicts**. We're adding files, not modifying existing ones.
+Most of our custom work lives in files that don't exist in the official PoB repository (`src/API/*`, `src/HeadlessWrapper.lua`), so upstream merges are usually straightforward. We do patch a small number of core files (`src/Modules/CalcPerform.lua`, `src/Modules/CalcSetup.lua`, `src/Modules/Main.lua`), so merge review should still inspect those closely.
 
 ---
 
@@ -66,14 +66,14 @@ Since our API files (`src/API/*`, `src/HeadlessWrapper.lua`) don't exist in the 
 This directory has three remotes:
 
 ```bash
-origin    → https://github.com/mauriceco2424/PathOfBuilding.git
+origin    -> https://github.com/mauriceco2424/PathOfBuilding.git
             (our fork - where we push our changes)
 
-community → https://github.com/PathOfBuildingCommunity/PathOfBuilding.git
+community -> https://github.com/PathOfBuildingCommunity/PathOfBuilding.git
             (official PoB - where we pull updates from)
 
-upstream  → https://github.com/ianderse/PathOfBuilding.git
-            (legacy - ianderse's api-stdio fork, kept for reference)
+upstream  -> https://github.com/ianderse/PathOfBuilding.git
+            (legacy reference only - not the source of truth)
 ```
 
 **Check remotes:**
@@ -104,22 +104,22 @@ This will:
 cd pob-api-fork
 
 # Fetch latest from official PoB
-git fetch community
+git fetch community --tags
 
 # See what's new
 git log HEAD..community/dev --oneline
 git diff HEAD..community/dev --stat
 
 # Merge
-git merge community/dev -m "Sync with PathOfBuildingCommunity vX.Y.Z"
+git merge community/dev -m "Merge official PoB dev into fork"
 
 # Rebuild Docker
 cd ..
-docker-compose build pob-api
-docker-compose up -d pob-api
+docker compose build pob-api-1 pob-api-2 pob-api-3
+docker compose up -d --force-recreate pob-api-1 pob-api-2 pob-api-3
 
 # Verify
-docker-compose exec -T pob-api sh -c 'echo "{\"action\":\"version\"}" | luajit HeadlessWrapper.lua --stdio 2>&1 | grep -E "^\{"'
+docker logs poa-pob-api-1 --tail 20
 ```
 
 ### Option 3: Version Check Script
@@ -140,7 +140,7 @@ You can review exactly what PathOfBuildingCommunity changed:
 
 ```bash
 cd pob-api-fork
-git fetch community
+git fetch community --tags
 
 # Commit log
 git log HEAD..community/dev --oneline
@@ -171,18 +171,18 @@ Check the official releases: https://github.com/PathOfBuildingCommunity/PathOfBu
 
 ## Docker Container
 
-The Docker container (`poa-pob-api`) runs the Lua code from this fork.
+The Docker pool (`poa-pob-api-1`, `poa-pob-api-2`, `poa-pob-api-3`) runs the Lua code from this fork.
 
 **Rebuild after fork updates:**
 ```bash
-docker-compose build pob-api
-docker-compose up -d pob-api
+docker compose build pob-api-1 pob-api-2 pob-api-3
+docker compose up -d --force-recreate pob-api-1 pob-api-2 pob-api-3
 ```
 
 **Check container health:**
 ```bash
-docker-compose ps pob-api
-docker-compose logs pob-api
+docker compose ps
+docker logs poa-pob-api-1
 ```
 
 ---
@@ -216,8 +216,8 @@ git push origin dev
 
 # Rebuild Docker
 cd ..
-docker-compose build pob-api
-docker-compose up -d pob-api
+docker compose build pob-api-1 pob-api-2 pob-api-3
+docker compose up -d --force-recreate pob-api-1 pob-api-2 pob-api-3
 ```
 
 ---
@@ -228,36 +228,42 @@ docker-compose up -d pob-api
 
 1. Check network connectivity to GitHub
 2. Verify community remote exists: `git remote -v`
-3. Try manual fetch: `git fetch community`
+3. Try manual fetch: `git fetch community --tags`
 
 ### "Merge conflicts"
 
-Unlikely since our files don't exist upstream, but if it happens:
-- Our API files: keep ours (`git checkout --ours src/API/*`)
-- Upstream files: accept theirs (`git checkout --theirs <file>`)
-- Complete merge: `git add . && git commit`
+Conflicts are usually limited to the small set of core files we patch on top of official PoB:
+- `src/Modules/CalcPerform.lua`
+- `src/Modules/CalcSetup.lua`
+- `src/Modules/Main.lua`
+
+If a conflict appears:
+- review the conflict manually instead of blindly accepting sides
+- keep our API layer files (`src/API/*`, `src/HeadlessWrapper.lua`)
+- verify the merged fork still boots and loads a real build after rebuild
 
 ### "API doesn't work after update"
 
 ```bash
 # Check container logs
-docker-compose logs pob-api
+docker logs poa-pob-api-1
 
 # Rebuild completely
-docker-compose build --no-cache pob-api
-docker-compose up -d pob-api
+docker compose build --no-cache pob-api-1 pob-api-2 pob-api-3
+docker compose up -d --force-recreate pob-api-1 pob-api-2 pob-api-3
 ```
 
 ### "Rollback to previous version"
 
 ```bash
 cd pob-api-fork
+git switch dev
 git log --oneline -5  # Find the commit before the merge
 git reset --hard <commit-hash>
 
 cd ..
-docker-compose build pob-api
-docker-compose up -d pob-api
+docker compose build pob-api-1 pob-api-2 pob-api-3
+docker compose up -d --force-recreate pob-api-1 pob-api-2 pob-api-3
 ```
 
 ---
@@ -277,6 +283,6 @@ docker-compose up -d pob-api
 
 ---
 
-**Last Updated**: 2026-01-10
-**Current Version**: v2.59.2
-**Status**: Synced with PathOfBuildingCommunity, independent of ianderse
+**Last Updated**: 2026-02-28
+**Current Version**: v2.60.0
+**Status**: Synced against PathOfBuildingCommunity/dev, official PoB is the source of truth

@@ -507,7 +507,7 @@ end
 
 -- Calculate life/mana reservation
 ---@param actor table
-function doActorLifeManaReservation(actor)
+function doActorLifeManaReservation(actor, addAura)
 	local modDB = actor.modDB
 	local output = actor.output
 	local condList = modDB.conditions
@@ -531,10 +531,12 @@ function doActorLifeManaReservation(actor)
 		else
 			reserved = 0
 		end
-		for _, value in ipairs(modDB:List(nil, "GrantReserved"..pool.."AsAura")) do
-			local auraMod = copyTable(value.mod)
-			auraMod.value = m_floor(auraMod.value * m_min(reserved, max))
-			modDB:NewMod("ExtraAura", "LIST", { mod = auraMod })
+		if addAura then
+			for _, value in ipairs(modDB:List(nil, "GrantReserved"..pool.."AsAura")) do
+				local auraMod = copyTable(value.mod)
+				auraMod.value = m_floor(auraMod.value * m_min(reserved, max))
+				modDB:NewMod("ExtraAura", "LIST", { mod = auraMod })
+			end
 		end
 	end
 end
@@ -897,18 +899,14 @@ local function doActorCharges(env, actor)
     output.PowerChargesDuration = m_floor(modDB:Sum("BASE", nil, "ChargeDuration") * calcLib.mod(modDB, nil, "PowerChargesDuration", "ChargeDuration"))
 	if modDB:Flag(nil, "MaximumFrenzyChargesIsMaximumPowerCharges") then
 		local source = modDB.mods["MaximumFrenzyChargesIsMaximumPowerCharges"][1].source
-		if not modDB:HasMod("OVERRIDE", {source = source:match("[^:]+")}, "FrenzyChargesMax") then
-			modDB:NewMod("FrenzyChargesMax", "OVERRIDE", output.PowerChargesMax, source)
-		end
+		modDB:ReplaceMod("FrenzyChargesMax", "OVERRIDE", output.PowerChargesMax, source)
 	end
 	output.FrenzyChargesMin = m_max(modDB:Sum("BASE", nil, "FrenzyChargesMin"), 0)
 	output.FrenzyChargesMax = modDB:Override(nil, "FrenzyChargesMax") or m_max(modDB:Flag(nil, "MaximumFrenzyChargesIsMaximumPowerCharges") and output.PowerChargesMax or modDB:Sum("BASE", nil, "FrenzyChargesMax"), 0)
 	output.FrenzyChargesDuration = m_floor(modDB:Sum("BASE", nil, "ChargeDuration") * calcLib.mod(modDB, nil, "FrenzyChargesDuration", "ChargeDuration"))
 	if modDB:Flag(nil, "MaximumEnduranceChargesIsMaximumFrenzyCharges") then
 		local source = modDB.mods["MaximumEnduranceChargesIsMaximumFrenzyCharges"][1].source
-		if not modDB:HasMod("OVERRIDE", {source = source:match("[^:]+")}, "EnduranceChargesMax") then
-			modDB:NewMod("EnduranceChargesMax", "OVERRIDE", output.FrenzyChargesMax, source)
-		end
+		modDB:ReplaceMod("EnduranceChargesMax", "OVERRIDE", output.FrenzyChargesMax, source)
 	end
 	output.EnduranceChargesMin = m_max(modDB:Sum("BASE", nil, "EnduranceChargesMin"), 0)
 	output.EnduranceChargesMax = modDB:Override(nil, "EnduranceChargesMax") or m_max(env.partyMembers.modDB:Flag(nil, "PartyMemberMaximumEnduranceChargesEqualToYours") and env.partyMembers.output.EnduranceChargesMax or (modDB:Flag(nil, "MaximumEnduranceChargesIsMaximumFrenzyCharges") and output.FrenzyChargesMax or modDB:Sum("BASE", nil, "EnduranceChargesMax")), 0)
@@ -1869,10 +1867,10 @@ function calcs.perform(env, skipEHP)
 		end
 	end
 
-	-- Set the life/mana reservations
-	doActorLifeManaReservation(env.player)
+	-- Set the life/mana reservations (hold off on GrantReserved"..pool.."AsAura)
+	doActorLifeManaReservation(env.player, not modDB:Flag(nil, "ManaIncreasedByOvercappedLightningRes"))
 
-	-- Process attribute requirements
+		-- Process attribute requirements
 	do
 		local reqMult = calcLib.mod(modDB, nil, "GlobalAttributeRequirements")
 		local omniRequirements = modDB:Flag(nil, "OmniscienceRequirements") and calcLib.mod(modDB, nil, "OmniAttributeRequirements")
@@ -2228,7 +2226,7 @@ function calcs.perform(env, skipEHP)
 							t_insert(extraAuraModList, copyTable(value.mod, true))
 						end
 					end
-					if not activeSkill.skillData.auraCannotAffectSelf or activeSkill.skillModList:Flag(skillCfg, "SelfAurasAffectYouAndLinkedTarget") then
+					if not activeSkill.skillData.auraCannotAffectSelf then
 						local inc = skillModList:Sum("INC", skillCfg, "AuraEffect", "BuffEffect", "BuffEffectOnSelf", "AuraEffectOnSelf", "AuraBuffEffect", "SkillAuraEffectOnSelf")
 						local more = skillModList:More(skillCfg, "AuraEffect", "BuffEffect", "BuffEffectOnSelf", "AuraEffectOnSelf", "AuraBuffEffect", "SkillAuraEffectOnSelf")
 						local mult = (1 + inc / 100) * more
@@ -3162,6 +3160,15 @@ function calcs.perform(env, skipEHP)
 		enemyDB:ReplaceMod("Multiplier:ImpaleStacks", "BASE", maxImpaleStacks, "Config", { type = "Condition", var = "Combat" })
 	end
 
+	-- Foulborn Choir of the Storm, needs to be after main auras (incase purity of lightning/elements auras) but before extra auras (Radiant Faith)
+	if modDB:Flag(nil, "ManaIncreasedByOvercappedLightningRes") then
+		-- Calclate resistances for ManaIncreasedByOvercappedLightningRes
+		calcs.resistances(env.player)
+		-- Set the life/mana reservations again as we now have increased mana from overcapped lightning resistance
+		doActorLifeMana(env.player)
+		doActorLifeManaReservation(env.player, true)
+	end
+
 	-- Check for extra auras
 	buffExports["Aura"]["extraAura"] = { effectMult = 1, modList = new("ModList") }
 	for _, value in ipairs(modDB:List(nil, "ExtraAura")) do
@@ -3226,6 +3233,14 @@ function calcs.perform(env, skipEHP)
 		end
 	elseif env.weaponModList1 then
 		modDB:AddList(env.weaponModList1)
+	end
+
+	-- Process prerequisites for conditionals
+	if calcs.defenceForConditionals then
+		calcs.defenceForConditionals(env, env.player)
+		if env.minion then
+			calcs.defenceForConditionals(env, env.minion)
+		end
 	end
 
 	-- Process misc buffs/modifiers
