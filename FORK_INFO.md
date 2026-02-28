@@ -63,7 +63,7 @@ Most of our custom work lives in files that don't exist in the official PoB repo
 
 ## Git Remote Configuration
 
-This directory has three remotes:
+This directory has two active remotes:
 
 ```bash
 origin    -> https://github.com/mauriceco2424/PathOfBuilding.git
@@ -71,10 +71,9 @@ origin    -> https://github.com/mauriceco2424/PathOfBuilding.git
 
 community -> https://github.com/PathOfBuildingCommunity/PathOfBuilding.git
             (official PoB - where we pull updates from)
-
-upstream  -> https://github.com/ianderse/PathOfBuilding.git
-            (legacy reference only - not the source of truth)
 ```
+
+There is no active git remote to `ianderse/PathOfBuilding` in this repo.
 
 **Check remotes:**
 ```bash
