@@ -548,18 +548,22 @@ function M.calc_with(params)
   local calcFunc, baseOut = build.calcsTab:GetMiscCalculator()
   local override = {}
   if params and type(params.addNodes) == 'table' then
-    override.addNodes = {}
+    local addNodes = {}
+    local hasAddNodes = false
     for _, id in ipairs(params.addNodes) do
       local n = build.spec and build.spec.nodes and build.spec.nodes[tonumber(id)]
-      if n then override.addNodes[n] = true end
+      if n then addNodes[n] = true; hasAddNodes = true end
     end
+    if hasAddNodes then override.addNodes = addNodes end
   end
   if params and type(params.removeNodes) == 'table' then
-    override.removeNodes = {}
+    local removeNodes = {}
+    local hasRemoveNodes = false
     for _, id in ipairs(params.removeNodes) do
       local n = build.spec and build.spec.nodes and build.spec.nodes[tonumber(id)]
-      if n then override.removeNodes[n] = true end
+      if n then removeNodes[n] = true; hasRemoveNodes = true end
     end
+    if hasRemoveNodes then override.removeNodes = removeNodes end
   end
   if params and type(params.masteryOverrides) == 'table' then
     override.masteryOverrides = {}
@@ -575,6 +579,7 @@ function M.calc_with(params)
     override.conditions = params.conditions
   end
   local out = calcFunc(override, params and params.useFullDPS)
+
   -- Use deepCopySafe to strip circular references and non-serializable values
   return {
     output = deepCopySafe(out),
