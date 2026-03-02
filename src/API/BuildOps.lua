@@ -1072,6 +1072,10 @@ function M.get_skills()
             -- Dual-nature gem support (e.g., Autoexertion has both active warcry and support effect)
             hasSecondarySupport = hasSecondarySupport or nil,  -- nil if false to keep JSON clean
             secondarySupportName = secondarySupportName,
+            -- Attribute requirements (computed by PoB from gem level + base multiplier)
+            reqStr = gem.reqStr and gem.reqStr > 0 and gem.reqStr or nil,
+            reqDex = gem.reqDex and gem.reqDex > 0 and gem.reqDex or nil,
+            reqInt = gem.reqInt and gem.reqInt > 0 and gem.reqInt or nil,
           })
         end
       end
