@@ -258,6 +258,18 @@ handlers.calc_with_gems = function(params)
   return { ok = true, output = result.output, baseOutput = result.baseOutput }
 end
 
+handlers.calc_with_jewel = function(params)
+  checkMemoryPressure()
+  local result, err = BuildOps.calc_with_jewel(params or {})
+  if not result then return { ok = false, error = err } end
+  return {
+    ok = true,
+    beforeOutput = result.beforeOutput,
+    afterOutput = result.afterOutput,
+    allocatedNotables = result.allocatedNotables,
+  }
+end
+
 handlers.get_config = function(params)
   local cfg, err = BuildOps.get_config()
   if not cfg then return { ok = false, error = err } end

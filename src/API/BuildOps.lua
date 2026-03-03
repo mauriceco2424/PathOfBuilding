@@ -814,6 +814,273 @@ function M.calc_with_gems(params)
 end
 
 
+-- Calculate what-if scenario with a jewel equipped in a tree socket, without persisting changes.
+-- params: {
+--   socketNodeId: number,          -- jewel socket node ID
+--   jewelText: string,             -- PoB item text for the jewel
+--   allocateNodes?: number[],      -- explicit node IDs to allocate (for cluster notables)
+--   autoAllocateNotables?: boolean,-- auto-find and allocate cluster notables
+--   useFullDPS?: boolean           -- use full DPS calculation
+-- }
+-- Returns: { beforeOutput, afterOutput, allocatedNotables? } or nil, error
+function M.calc_with_jewel(params)
+  if not build or not build.spec then return nil, 'build/spec not initialized' end
+  if not build.itemsTab then return nil, 'items not initialized' end
+  if not build.calcsTab then return nil, 'calcs not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+
+  local nodeId = tonumber(params.socketNodeId)
+  if not nodeId then return nil, 'missing or invalid socketNodeId' end
+
+  local jewelText = params.jewelText
+  if type(jewelText) ~= 'string' or #jewelText == 0 then
+    return nil, 'missing or empty jewelText'
+  end
+  if #jewelText > MAX_ITEM_TEXT_LENGTH then
+    return nil, string.format('jewelText too long (max %d bytes)', MAX_ITEM_TEXT_LENGTH)
+  end
+
+  local spec = build.spec
+  local itemsTab = build.itemsTab
+
+  -- Verify this is a valid jewel socket
+  local socketCtrl = itemsTab.sockets[nodeId]
+  if not socketCtrl then
+    return nil, 'nodeId ' .. tostring(nodeId) .. ' is not a jewel socket'
+  end
+
+  -- 1. Capture beforeOutput
+  build.calcsTab:BuildOutput()
+  local beforeOutput = deepCopySafe(build.calcsTab.mainOutput)
+
+  -- 2. Snapshot all mutable state for restoration
+  local savedJewels = {}
+  for k, v in pairs(spec.jewels) do savedJewels[k] = v end
+
+  local savedAllocNodeKeys = {}
+  for k, _ in pairs(spec.allocNodes) do savedAllocNodeKeys[k] = true end
+
+  local savedAllocExtended = {}
+  for i, v in ipairs(spec.allocExtendedNodes) do savedAllocExtended[i] = v end
+
+  local savedAllocSubgraph = {}
+  for i, v in ipairs(spec.allocSubgraphNodes) do savedAllocSubgraph[i] = v end
+
+  local savedNodeKeys = {}
+  for k, _ in pairs(spec.nodes) do savedNodeKeys[k] = true end
+
+  local savedSocketSelId = socketCtrl.selItemId
+
+  -- Track items we create so we can clean them up
+  local createdItemId = nil
+
+  -- 3. Define the restore function (MUST run regardless of success/failure)
+  local function restoreState()
+    -- a. Unequip jewel from socket
+    pcall(function()
+      socketCtrl:SetSelItemId(savedSocketSelId or 0)
+      itemsTab:PopulateSlots()
+    end)
+
+    -- b. Rebuild to destroy cluster subgraph created by the test jewel
+    pcall(function()
+      build.buildFlag = true
+      M.get_main_output()
+    end)
+
+    -- c. Restore allocNodes: remove added keys, re-add removed keys
+    for k, _ in pairs(spec.allocNodes) do
+      if not savedAllocNodeKeys[k] then
+        spec.allocNodes[k] = nil
+      end
+    end
+    for k, _ in pairs(savedAllocNodeKeys) do
+      if not spec.allocNodes[k] then
+        local node = spec.nodes[k]
+        if node then
+          spec.allocNodes[k] = node
+        end
+      end
+    end
+
+    -- d. Restore allocExtendedNodes (array)
+    wipeTable(spec.allocExtendedNodes)
+    for i, v in ipairs(savedAllocExtended) do spec.allocExtendedNodes[i] = v end
+
+    -- e. Restore allocSubgraphNodes (array)
+    wipeTable(spec.allocSubgraphNodes)
+    for i, v in ipairs(savedAllocSubgraph) do spec.allocSubgraphNodes[i] = v end
+
+    -- f. Restore jewels map
+    wipeTable(spec.jewels)
+    for k, v in pairs(savedJewels) do spec.jewels[k] = v end
+
+    -- g. Delete test item from items list
+    if createdItemId and itemsTab.items[createdItemId] then
+      itemsTab.items[createdItemId] = nil
+    end
+
+    -- h. Rebuild paths and output to restore fully
+    pcall(function()
+      spec:BuildAllDependsAndPaths()
+      build.buildFlag = true
+      M.get_main_output()
+    end)
+  end
+
+  -- 4. Execute the test in a pcall-protected block
+  local ok, result = pcall(function()
+    -- 4a. Auto-allocate the socket node if not already allocated
+    if not spec.allocNodes[nodeId] then
+      local current = M.get_tree()
+      if not current then error('failed to get current tree') end
+      local newNodes = {}
+      for _, id in ipairs(current.nodes) do t_insert(newNodes, id) end
+      t_insert(newNodes, nodeId)
+      spec:ImportFromNodeList(
+        current.classId or 0,
+        current.ascendClassId or 0,
+        current.secondaryAscendClassId or 0,
+        newNodes,
+        {},
+        current.masteryEffects or {}
+      )
+      itemsTab:UpdateSockets()
+    end
+
+    -- 4b. Create jewel item
+    local parseOk, item = pcall(new, 'Item', jewelText)
+    if not parseOk then error('invalid item text: ' .. tostring(item)) end
+    if not item or not item.baseName then error('failed to parse item') end
+    if item.type ~= 'Jewel' then error('item is not a jewel (type: ' .. tostring(item.type) .. ')') end
+
+    item:NormaliseQuality()
+    itemsTab:AddItem(item, true) -- noAutoEquip = true
+    createdItemId = item.id
+
+    -- 4c. Equip jewel to socket
+    socketCtrl:SetSelItemId(createdItemId)
+    itemsTab:PopulateSlots()
+
+    -- 4d. Trigger build (this runs BuildClusterJewelGraphs for cluster jewels)
+    build.buildFlag = true
+    M.get_main_output()
+
+    -- 4e. Auto-allocate cluster notables if requested
+    local allocatedNotableIds = nil
+
+    if params.autoAllocateNotables then
+      -- Find newly created nodes (cluster subgraph nodes added by the jewel)
+      local newNodes = {}
+      for k, node in pairs(spec.nodes) do
+        if not savedNodeKeys[k] then
+          t_insert(newNodes, node)
+        end
+      end
+
+      -- Find notables among new nodes
+      local notables = {}
+      for _, node in ipairs(newNodes) do
+        if node.type == "Notable" then
+          t_insert(notables, node)
+        end
+      end
+
+      -- Allocate notables and any small passives on the path
+      -- BFS from socket through cluster subgraph to each notable
+      if #notables > 0 then
+        allocatedNotableIds = {}
+        for _, notable in ipairs(notables) do
+          -- Simple BFS from socket node through linked cluster nodes to find path
+          local visited = {}
+          local queue = {}
+          local parent = {}
+          -- Start from the socket node in spec.nodes
+          local socketNode = spec.nodes[nodeId]
+          if socketNode then
+            t_insert(queue, socketNode)
+            visited[socketNode.id] = true
+            local found = false
+            while #queue > 0 and not found do
+              local current = table.remove(queue, 1)
+              if current.id == notable.id then
+                found = true
+                break
+              end
+              if current.linked then
+                for _, linked in ipairs(current.linked) do
+                  if not visited[linked.id] then
+                    -- Only traverse through new cluster nodes or the socket itself
+                    if not savedNodeKeys[linked.id] or linked.id == nodeId then
+                      visited[linked.id] = true
+                      parent[linked.id] = current.id
+                      t_insert(queue, linked)
+                    end
+                  end
+                end
+              end
+            end
+
+            if found then
+              -- Trace path from notable back to socket and allocate all nodes
+              local pathId = notable.id
+              while pathId and pathId ~= nodeId do
+                local pathNode = spec.nodes[pathId]
+                if pathNode and not spec.allocNodes[pathId] then
+                  pathNode.alloc = true
+                  spec.allocNodes[pathId] = pathNode
+                end
+                pathId = parent[pathId]
+              end
+              t_insert(allocatedNotableIds, notable.id)
+            end
+          end
+        end
+      end
+
+    elseif params.allocateNodes and type(params.allocateNodes) == 'table' then
+      -- Explicit node allocation
+      allocatedNotableIds = {}
+      for _, nid in ipairs(params.allocateNodes) do
+        local nid_num = tonumber(nid)
+        if nid_num then
+          local node = spec.nodes[nid_num]
+          if node and not spec.allocNodes[nid_num] then
+            node.alloc = true
+            spec.allocNodes[nid_num] = node
+            t_insert(allocatedNotableIds, nid_num)
+          end
+        end
+      end
+    end
+
+    -- 4f. Rebuild if any nodes were allocated in step 4e
+    if allocatedNotableIds and #allocatedNotableIds > 0 then
+      build.buildFlag = true
+      M.get_main_output()
+    end
+
+    -- 4g. Capture afterOutput
+    local afterOutput = deepCopySafe(build.calcsTab.mainOutput)
+
+    return {
+      beforeOutput = beforeOutput,
+      afterOutput = afterOutput,
+      allocatedNotables = allocatedNotableIds,
+    }
+  end)
+
+  -- 5. ALWAYS restore state, regardless of success or failure
+  restoreState()
+
+  -- 6. Return result or error
+  if not ok then
+    return nil, tostring(result)
+  end
+  return result
+end
+
+
 -- Get basic config values
 function M.get_config()
   if not build or not build.configTab then return nil, 'build/config not initialized' end
