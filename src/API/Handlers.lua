@@ -251,6 +251,13 @@ handlers.calc_with = function(params)
   return { ok = true, output = result.output, baseOutput = result.baseOutput }
 end
 
+handlers.calc_with_batch = function(params)
+  checkMemoryPressure()
+  local result, err = BuildOps.calc_with_batch(params or {})
+  if not result then return { ok = false, error = err } end
+  return { ok = true, results = result.results, baseOutput = result.baseOutput }
+end
+
 handlers.calc_with_gems = function(params)
   checkMemoryPressure()
   local result, err = BuildOps.calc_with_gems(params or {})
