@@ -826,6 +826,7 @@ end
 --   socketNodeId: number,          -- jewel socket node ID
 --   jewelText: string,             -- PoB item text for the jewel
 --   allocateNodes?: number[],      -- explicit node IDs to allocate (for cluster notables)
+--   autoAllocateSocketPath?: bool, -- auto-path to the host socket if not allocated
 --   autoAllocateNotables?: boolean,-- auto-find and allocate cluster notables
 --   useFullDPS?: boolean           -- use full DPS calculation
 -- }
@@ -937,13 +938,33 @@ function M.calc_with_jewel(params)
 
   -- 4. Execute the test in a pcall-protected block
   local ok, result = pcall(function()
-    -- 4a. Auto-allocate the socket node if not already allocated
+    -- 4a. Allocate the host socket if not already allocated.
+    -- When autoAllocateSocketPath is set, path to the socket first so ordinary
+    -- jewels are tested in a connected live tree instead of a disconnected node.
     if not spec.allocNodes[nodeId] then
       local current = M.get_tree()
       if not current then error('failed to get current tree') end
+      local newNodeSet = {}
+      for _, id in ipairs(current.nodes) do
+        newNodeSet[tonumber(id)] = true
+      end
+
+      if params.autoAllocateSocketPath then
+        local pathResult, pathErr = M.find_path({ targetNodeId = nodeId })
+        if not pathResult then
+          error('failed to path to socket ' .. tostring(nodeId) .. ': ' .. tostring(pathErr))
+        end
+        for _, pathNode in ipairs(pathResult.path or {}) do
+          if pathNode and pathNode.id then
+            newNodeSet[tonumber(pathNode.id)] = true
+          end
+        end
+      end
+
+      newNodeSet[nodeId] = true
       local newNodes = {}
-      for _, id in ipairs(current.nodes) do t_insert(newNodes, id) end
-      t_insert(newNodes, nodeId)
+      for id, _ in pairs(newNodeSet) do t_insert(newNodes, id) end
+      table.sort(newNodes)
       spec:ImportFromNodeList(
         current.classId or 0,
         current.ascendClassId or 0,
@@ -2726,37 +2747,45 @@ function M.get_jewel_sockets()
   local itemsTab = build.itemsTab
   local result = {}
 
-  -- Iterate through all socket controls (jewel sockets in tree)
+  -- Iterate through live socket controls (jewel sockets in the current tree).
+  -- itemsTab.sockets can retain stale controls from destroyed cluster subgraphs;
+  -- those node IDs are not present in spec.nodes and must be ignored.
   for nodeId, socketCtrl in pairs(itemsTab.sockets) do
     local node = spec.nodes[nodeId]
-    local isAllocated = spec.allocNodes[nodeId] ~= nil
-    local equippedJewelId = spec.jewels[nodeId] or 0
-    local equippedJewel = nil
+    if node then
+      local isAllocated = spec.allocNodes[nodeId] ~= nil
+      local equippedJewelId = spec.jewels[nodeId] or 0
+      local equippedJewel = nil
+      local clusterSocketSize = node.expansionJewel and tonumber(node.expansionJewel.size) or nil
 
-    if equippedJewelId > 0 then
-      local item = itemsTab.items[equippedJewelId]
-      if item then
-        equippedJewel = {
-          id = equippedJewelId,
-          name = item.name,
-          baseName = item.baseName,
-          type = item.type,
-          rarity = item.rarity,
-          raw = item.raw,
-        }
+      if equippedJewelId > 0 then
+        local item = itemsTab.items[equippedJewelId]
+        if item then
+          equippedJewel = {
+            id = equippedJewelId,
+            name = item.name,
+            baseName = item.baseName,
+            type = item.type,
+            rarity = item.rarity,
+            raw = item.raw,
+          }
+        end
       end
-    end
 
-    table.insert(result, {
-      nodeId = nodeId,
-      slotName = socketCtrl.slotName,
-      isAllocated = isAllocated,
-      equippedJewelId = equippedJewelId,
-      equippedJewel = equippedJewel,
-      -- Include node position for reference
-      x = node and node.x or nil,
-      y = node and node.y or nil,
-    })
+      table.insert(result, {
+        nodeId = nodeId,
+        slotName = socketCtrl.slotName,
+        isAllocated = isAllocated,
+        equippedJewelId = equippedJewelId,
+        equippedJewel = equippedJewel,
+        acceptsClusterJewel = clusterSocketSize ~= nil,
+        clusterSocketSize = clusterSocketSize,
+        isSubgraphSocket = nodeId >= 0x10000,
+        -- Include node position for reference
+        x = node.x,
+        y = node.y,
+      })
+    end
   end
 
   -- Sort by nodeId for consistent ordering
