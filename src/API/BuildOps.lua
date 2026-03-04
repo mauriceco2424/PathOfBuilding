@@ -16,6 +16,13 @@ function M.get_main_output()
   if not build or not build.calcsTab then
     return nil, "build not initialized"
   end
+  -- Mirror Build:OnFrame() behavior: wipe GlobalCache when buildFlag is set
+  -- Without this, BuildOutput() reuses stale cached skill calculations
+  -- (e.g. calc_with_jewel would see identical before/after outputs)
+  if build.buildFlag then
+    wipeGlobalCache()
+    build.buildFlag = false
+  end
   if build.calcsTab.BuildOutput then
     build.calcsTab:BuildOutput()
   end
@@ -1062,6 +1069,11 @@ function M.calc_with_jewel(params)
 
     -- 4g. Capture afterOutput
     local afterOutput = deepCopySafe(build.calcsTab.mainOutput)
+
+    -- Diagnostic: log before/after CombinedDPS to verify jewel impact
+    local bDPS = beforeOutput and beforeOutput.CombinedDPS or 0
+    local aDPS = afterOutput and afterOutput.CombinedDPS or 0
+    io.stderr:write(string.format("[calc_with_jewel] before CombinedDPS=%.1f  after CombinedDPS=%.1f  delta=%.1f\n", bDPS, aDPS, aDPS - bDPS))
 
     return {
       beforeOutput = beforeOutput,
