@@ -3,7 +3,7 @@
 -- It can be run using a standard lua interpreter, although LuaJIT is preferable
 
 -- Load LibDeflate for compression/decompression support
-local scriptDir = arg[0]:match("(.*/)")  or "./"
+local scriptDir = arg[0]:match("(.*[/\\])")  or "./"
 local LibDeflate = dofile(scriptDir .. "LibDeflate.lua")
 
 -- Callbacks
