@@ -1185,7 +1185,7 @@ function M.get_full_config()
     conditionBeenHitRecently = input.conditionBeenHitRecently or false,
 
     -- Enemy conditions
-    enemyIsBoss = input.enemyIsBoss or "None",
+    enemyIsBoss = input.enemyIsBoss or "Pinnacle",
     conditionEnemyIntimidated = input.conditionEnemyIntimidated or false,
     conditionEnemyUnnerved = input.conditionEnemyUnnerved or false,
     conditionEnemyCoveredInAsh = input.conditionEnemyCoveredInAsh or false,
