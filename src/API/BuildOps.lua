@@ -1130,6 +1130,10 @@ end
 function M.get_full_config()
   if not build or not build.configTab then return nil, 'build/config not initialized' end
   local input = build.configTab.input or {}
+  local conditionEnemyChilled = input.conditionEnemyChilled or false
+  local conditionEnemyShocked = input.conditionEnemyShocked or false
+  local conditionEnemyCrushed = input.conditionEnemyCrushed or false
+  local conditionEnemyBlinded = input.conditionEnemyBlinded or false
   local cfg = {
     -- Basic config
     bandit = input.bandit or build.bandit,
@@ -1153,6 +1157,12 @@ function M.get_full_config()
     buffTailwind = input.buffTailwind or false,
     buffAdrenaline = input.buffAdrenaline or false,
     buffUnholyMight = input.buffUnholyMight or false,
+    buffPhasing = input.buffPhasing or false,
+    buffElusive = input.buffElusive or false,
+    buffArcaneSurge = input.buffArcaneSurge or false,
+    buffFanaticism = input.buffFanaticism or false,
+    buffDivinity = input.buffDivinity or false,
+    buffConvergence = input.buffConvergence or false,
     conditionUsingFlask = input.conditionUsingFlask or false,
 
     -- Combat conditions
@@ -1160,6 +1170,12 @@ function M.get_full_config()
     conditionFullLife = input.conditionFullLife or false,
     conditionLowMana = input.conditionLowMana or false,
     conditionFullMana = input.conditionFullMana or false,
+    conditionLeeching = input.conditionLeeching or false,
+    conditionOnConsecratedGround = input.conditionOnConsecratedGround or false,
+    conditionKilledRecently = input.conditionKilledRecently or false,
+    conditionHitRecently = input.conditionHitRecently or false,
+    conditionCritRecently = input.conditionCritRecently or false,
+    conditionBeenHitRecently = input.conditionBeenHitRecently or false,
 
     -- Enemy conditions
     enemyIsBoss = input.enemyIsBoss or "None",
@@ -1167,10 +1183,29 @@ function M.get_full_config()
     conditionEnemyUnnerved = input.conditionEnemyUnnerved or false,
     conditionEnemyCoveredInAsh = input.conditionEnemyCoveredInAsh or false,
     conditionEnemyCoveredInFrost = input.conditionEnemyCoveredInFrost or false,
-    enemyIsChilled = input.conditionEnemyChilled or false,
-    enemyIsShocked = input.conditionEnemyShocked or false,
-    enemyIsCrushed = input.conditionEnemyCrushed or false,
-    enemyIsBlinded = input.conditionEnemyBlinded or false,
+    conditionEnemyMaimed = input.conditionEnemyMaimed or false,
+    conditionEnemyBleeding = input.conditionEnemyBleeding or false,
+    conditionEnemyPoisoned = input.conditionEnemyPoisoned or false,
+    conditionEnemyIgnited = input.conditionEnemyIgnited or false,
+    conditionEnemyBurning = input.conditionEnemyBurning or false,
+    conditionEnemyHindered = input.conditionEnemyHindered or false,
+    conditionEnemyTaunted = input.conditionEnemyTaunted or false,
+    conditionEnemyDebilitated = input.conditionEnemyDebilitated or false,
+    conditionEnemyFireExposure = input.conditionEnemyFireExposure or false,
+    conditionEnemyColdExposure = input.conditionEnemyColdExposure or false,
+    conditionEnemyLightningExposure = input.conditionEnemyLightningExposure or false,
+    conditionEnemyScorched = input.conditionEnemyScorched or false,
+    conditionEnemyBrittle = input.conditionEnemyBrittle or false,
+    conditionEnemySapped = input.conditionEnemySapped or false,
+    conditionEnemyChilled = conditionEnemyChilled,
+    conditionEnemyShocked = conditionEnemyShocked,
+    conditionEnemyCrushed = conditionEnemyCrushed,
+    conditionEnemyBlinded = conditionEnemyBlinded,
+    -- Legacy aliases used by older TypeScript surfaces
+    enemyIsChilled = conditionEnemyChilled,
+    enemyIsShocked = conditionEnemyShocked,
+    enemyIsCrushed = conditionEnemyCrushed,
+    enemyIsBlinded = conditionEnemyBlinded,
 
     -- Enemy stats overrides
     enemyFireResist = input.enemyFireResist,
@@ -1179,8 +1214,24 @@ function M.get_full_config()
     enemyChaosResist = input.enemyChaosResist,
     enemyPhysicalDamageReduction = input.enemyPhysicalDamageReduction,
 
+    -- Skill-specific numeric vars (set via set_skill_config / set_batch_skill_config)
+    multiplierWitheredStackCount = input.multiplierWitheredStackCount or 0,
+    conditionShockEffect = input.conditionShockEffect or 0,
+    conditionEnemyChilledEffect = input.conditionEnemyChilledEffect or 0,
+    conditionScorchedEffect = input.conditionScorchedEffect or 0,
+    conditionBrittleEffect = input.conditionBrittleEffect or 0,
+    conditionSapEffect = input.conditionSapEffect or 0,
+    multiplierPoisonOnEnemy = input.multiplierPoisonOnEnemy or 0,
+    multiplierRage = input.multiplierRage or 0,
+    multiplierImpalesOnEnemy = input.multiplierImpalesOnEnemy or 0,
+    multiplierRuptureStacks = input.multiplierRuptureStacks or 0,
+    multiplierCorrosionStackCount = input.multiplierCorrosionStackCount or 0,
+    multiplierManaBurnStacks = input.multiplierManaBurnStacks or 0,
+
     -- Custom modifiers
     customMods = input.customMods or "",
+    disabledCurses = input.disabledCurses,
+    overrideCurseLimit = input.overrideCurseLimit,
   }
   return cfg
 end
@@ -1215,6 +1266,12 @@ function M.set_config(params)
   if params.buffTailwind ~= nil then input.buffTailwind = params.buffTailwind; changed = true end
   if params.buffAdrenaline ~= nil then input.buffAdrenaline = params.buffAdrenaline; changed = true end
   if params.buffUnholyMight ~= nil then input.buffUnholyMight = params.buffUnholyMight; changed = true end
+  if params.buffPhasing ~= nil then input.buffPhasing = params.buffPhasing; changed = true end
+  if params.buffElusive ~= nil then input.buffElusive = params.buffElusive; changed = true end
+  if params.buffArcaneSurge ~= nil then input.buffArcaneSurge = params.buffArcaneSurge; changed = true end
+  if params.buffFanaticism ~= nil then input.buffFanaticism = params.buffFanaticism; changed = true end
+  if params.buffDivinity ~= nil then input.buffDivinity = params.buffDivinity; changed = true end
+  if params.buffConvergence ~= nil then input.buffConvergence = params.buffConvergence; changed = true end
   if params.conditionUsingFlask ~= nil then input.conditionUsingFlask = params.conditionUsingFlask; changed = true end
 
   -- Combat conditions
@@ -1222,6 +1279,12 @@ function M.set_config(params)
   if params.conditionFullLife ~= nil then input.conditionFullLife = params.conditionFullLife; changed = true end
   if params.conditionLowMana ~= nil then input.conditionLowMana = params.conditionLowMana; changed = true end
   if params.conditionFullMana ~= nil then input.conditionFullMana = params.conditionFullMana; changed = true end
+  if params.conditionLeeching ~= nil then input.conditionLeeching = params.conditionLeeching; changed = true end
+  if params.conditionOnConsecratedGround ~= nil then input.conditionOnConsecratedGround = params.conditionOnConsecratedGround; changed = true end
+  if params.conditionKilledRecently ~= nil then input.conditionKilledRecently = params.conditionKilledRecently; changed = true end
+  if params.conditionHitRecently ~= nil then input.conditionHitRecently = params.conditionHitRecently; changed = true end
+  if params.conditionCritRecently ~= nil then input.conditionCritRecently = params.conditionCritRecently; changed = true end
+  if params.conditionBeenHitRecently ~= nil then input.conditionBeenHitRecently = params.conditionBeenHitRecently; changed = true end
 
   -- Enemy conditions
   if params.enemyIsBoss ~= nil then input.enemyIsBoss = tostring(params.enemyIsBoss); changed = true end
@@ -1229,6 +1292,25 @@ function M.set_config(params)
   if params.conditionEnemyUnnerved ~= nil then input.conditionEnemyUnnerved = params.conditionEnemyUnnerved; changed = true end
   if params.conditionEnemyCoveredInAsh ~= nil then input.conditionEnemyCoveredInAsh = params.conditionEnemyCoveredInAsh; changed = true end
   if params.conditionEnemyCoveredInFrost ~= nil then input.conditionEnemyCoveredInFrost = params.conditionEnemyCoveredInFrost; changed = true end
+  if params.conditionEnemyMaimed ~= nil then input.conditionEnemyMaimed = params.conditionEnemyMaimed; changed = true end
+  if params.conditionEnemyBleeding ~= nil then input.conditionEnemyBleeding = params.conditionEnemyBleeding; changed = true end
+  if params.conditionEnemyPoisoned ~= nil then input.conditionEnemyPoisoned = params.conditionEnemyPoisoned; changed = true end
+  if params.conditionEnemyIgnited ~= nil then input.conditionEnemyIgnited = params.conditionEnemyIgnited; changed = true end
+  if params.conditionEnemyBurning ~= nil then input.conditionEnemyBurning = params.conditionEnemyBurning; changed = true end
+  if params.conditionEnemyHindered ~= nil then input.conditionEnemyHindered = params.conditionEnemyHindered; changed = true end
+  if params.conditionEnemyTaunted ~= nil then input.conditionEnemyTaunted = params.conditionEnemyTaunted; changed = true end
+  if params.conditionEnemyDebilitated ~= nil then input.conditionEnemyDebilitated = params.conditionEnemyDebilitated; changed = true end
+  if params.conditionEnemyFireExposure ~= nil then input.conditionEnemyFireExposure = params.conditionEnemyFireExposure; changed = true end
+  if params.conditionEnemyColdExposure ~= nil then input.conditionEnemyColdExposure = params.conditionEnemyColdExposure; changed = true end
+  if params.conditionEnemyLightningExposure ~= nil then input.conditionEnemyLightningExposure = params.conditionEnemyLightningExposure; changed = true end
+  if params.conditionEnemyScorched ~= nil then input.conditionEnemyScorched = params.conditionEnemyScorched; changed = true end
+  if params.conditionEnemyBrittle ~= nil then input.conditionEnemyBrittle = params.conditionEnemyBrittle; changed = true end
+  if params.conditionEnemySapped ~= nil then input.conditionEnemySapped = params.conditionEnemySapped; changed = true end
+  if params.conditionEnemyChilled ~= nil then input.conditionEnemyChilled = params.conditionEnemyChilled; changed = true end
+  if params.conditionEnemyShocked ~= nil then input.conditionEnemyShocked = params.conditionEnemyShocked; changed = true end
+  if params.conditionEnemyCrushed ~= nil then input.conditionEnemyCrushed = params.conditionEnemyCrushed; changed = true end
+  if params.conditionEnemyBlinded ~= nil then input.conditionEnemyBlinded = params.conditionEnemyBlinded; changed = true end
+  -- Backward-compat aliases
   if params.enemyIsChilled ~= nil then input.conditionEnemyChilled = params.enemyIsChilled; changed = true end
   if params.enemyIsShocked ~= nil then input.conditionEnemyShocked = params.enemyIsShocked; changed = true end
   if params.enemyIsCrushed ~= nil then input.conditionEnemyCrushed = params.enemyIsCrushed; changed = true end
@@ -1240,6 +1322,20 @@ function M.set_config(params)
   if params.enemyLightningResist ~= nil then input.enemyLightningResist = tonumber(params.enemyLightningResist); changed = true end
   if params.enemyChaosResist ~= nil then input.enemyChaosResist = tonumber(params.enemyChaosResist); changed = true end
   if params.enemyPhysicalDamageReduction ~= nil then input.enemyPhysicalDamageReduction = tonumber(params.enemyPhysicalDamageReduction); changed = true end
+
+  -- Skill-specific numeric vars
+  if params.multiplierWitheredStackCount ~= nil then input.multiplierWitheredStackCount = tonumber(params.multiplierWitheredStackCount); changed = true end
+  if params.conditionShockEffect ~= nil then input.conditionShockEffect = tonumber(params.conditionShockEffect); changed = true end
+  if params.conditionEnemyChilledEffect ~= nil then input.conditionEnemyChilledEffect = tonumber(params.conditionEnemyChilledEffect); changed = true end
+  if params.conditionScorchedEffect ~= nil then input.conditionScorchedEffect = tonumber(params.conditionScorchedEffect); changed = true end
+  if params.conditionBrittleEffect ~= nil then input.conditionBrittleEffect = tonumber(params.conditionBrittleEffect); changed = true end
+  if params.conditionSapEffect ~= nil then input.conditionSapEffect = tonumber(params.conditionSapEffect); changed = true end
+  if params.multiplierPoisonOnEnemy ~= nil then input.multiplierPoisonOnEnemy = tonumber(params.multiplierPoisonOnEnemy); changed = true end
+  if params.multiplierRage ~= nil then input.multiplierRage = tonumber(params.multiplierRage); changed = true end
+  if params.multiplierImpalesOnEnemy ~= nil then input.multiplierImpalesOnEnemy = tonumber(params.multiplierImpalesOnEnemy); changed = true end
+  if params.multiplierRuptureStacks ~= nil then input.multiplierRuptureStacks = tonumber(params.multiplierRuptureStacks); changed = true end
+  if params.multiplierCorrosionStackCount ~= nil then input.multiplierCorrosionStackCount = tonumber(params.multiplierCorrosionStackCount); changed = true end
+  if params.multiplierManaBurnStacks ~= nil then input.multiplierManaBurnStacks = tonumber(params.multiplierManaBurnStacks); changed = true end
 
   -- Custom modifiers
   if params.customMods ~= nil then input.customMods = tostring(params.customMods); changed = true end
