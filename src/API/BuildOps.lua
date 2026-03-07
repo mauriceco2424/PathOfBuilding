@@ -110,6 +110,13 @@ function M.get_full_calcs()
     return nil, 'build not initialized'
   end
 
+  -- Wipe GlobalCache if buildFlag is set (mirrors get_main_output behavior)
+  -- Without this, BuildOutput() reuses stale cached calculations
+  if build.buildFlag then
+    wipeGlobalCache()
+    build.buildFlag = false
+  end
+
   -- Ensure calculations are up to date
   if build.calcsTab.BuildOutput then
     build.calcsTab:BuildOutput()
@@ -1362,6 +1369,9 @@ function M.set_config(params)
   end
 
   if changed and build.configTab.BuildModList then build.configTab:BuildModList() end
+  -- Wipe GlobalCache so BuildOutput() recalculates with updated config
+  -- (e.g. customMods changing resistances must invalidate cached EHP)
+  build.buildFlag = true
   M.get_main_output()
   return true
 end
