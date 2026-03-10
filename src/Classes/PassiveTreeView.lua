@@ -273,6 +273,9 @@ function PassiveTreeViewClass:Draw(build, viewPort, inputEvents)
 		end
 	end
 
+	-- Split Personality highlight
+	local splitPersonalityPath = spec.splitPersonalityPath or { }
+
 	if treeClick == "LEFT" then
 		if hoverNode then
 			-- User left-clicked on a node
@@ -547,7 +550,13 @@ function PassiveTreeViewClass:Draw(build, viewPort, inputEvents)
 	end
 	local function renderConnector(connector)
 		local node1, node2 = spec.nodes[connector.nodeId1], spec.nodes[connector.nodeId2]
-		setConnectorColor(1, 1, 1)
+		local connectorDefaultColor = "^xFFFFFF"
+
+		if splitPersonalityPath[node1.id] and splitPersonalityPath[node2.id] then
+			connectorDefaultColor = colorCodes.SPLITPERSONALITY
+		end
+
+		setConnectorColor(connectorDefaultColor)
 		local state = getState(node1, node2)
 		local baseState = state
 		if self.compareSpec then
@@ -633,6 +642,12 @@ function PassiveTreeViewClass:Draw(build, viewPort, inputEvents)
 
 		local base, overlay, effect
 		local isAlloc = node.alloc or build.calcsTab.mainEnv.grantedPassives[nodeId] or (compareNode and compareNode.alloc)
+		local nodeDefaultColor = "^xFFFFFF"
+
+		if splitPersonalityPath[node.id] then
+			nodeDefaultColor = colorCodes.SPLITPERSONALITY
+		end
+
 		SetDrawLayer(nil, 25)
 		if node.type == "ClassStart" then
 			overlay = isAlloc and node.startArt or "PSStartNodeBackgroundInactive"
@@ -778,11 +793,11 @@ function PassiveTreeViewClass:Draw(build, viewPort, inputEvents)
 						-- Node is a mastery, both have it allocated, but mastery changed, color it blue
 						SetDrawColor(0, 0, 1)
 					else
-						-- Both have or both have not, use white
-						SetDrawColor(1, 1, 1)
+						-- Both have or both have not
+						SetDrawColor(nodeDefaultColor)
 					end
 				else
-					SetDrawColor(1, 1, 1)
+					SetDrawColor(nodeDefaultColor)
 				end
 			end
 		elseif launch.devModeAlt then
@@ -806,11 +821,11 @@ function PassiveTreeViewClass:Draw(build, viewPort, inputEvents)
 					-- Node is a mastery, both have it allocated, but mastery changed, color it blue
 					SetDrawColor(0, 0, 1)
 				else
-					-- Both have or both have not, use white
-					SetDrawColor(1, 1, 1)
-				end
+					-- Both have or both have not
+					SetDrawColor(nodeDefaultColor)
+				end	
 			else
-				SetDrawColor(1, 1, 1)
+				SetDrawColor(nodeDefaultColor)
 			end
 		end
 
