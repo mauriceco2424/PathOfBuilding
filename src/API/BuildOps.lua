@@ -43,6 +43,7 @@ function M.export_stats(fields)
   local wanted = fields or {
     "Life", "EnergyShield", "Armour", "Evasion",
     "FireResist", "ColdResist", "LightningResist", "ChaosResist",
+    "FireResistOverCap", "ColdResistOverCap", "LightningResistOverCap", "ChaosResistOverCap",
     "BlockChance", "SpellBlockChance",
     "LifeRegen", "Mana", "ManaRegen",
     "Ward", "DodgeChance", "SpellDodgeChance",
