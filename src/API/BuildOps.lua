@@ -164,7 +164,6 @@ function M.get_full_calcs()
   end
 
   local skillOutput = calcsTab.skillOutput or {}
-  local mainOutputCopy = deepCopySafe(mainOutput)
   local breakdown = calcsTab.breakdown or {}
 
   -- Extract config and skills context
@@ -174,21 +173,115 @@ function M.get_full_calcs()
   local configInput = configTab and configTab.input or {}
   local socketGroups = skillsTab and skillsTab.socketGroupList or {}
 
-  -- Identify active skill
+  -- Identify active skill from the calculation environment (not build.activeSkill which is GUI-only)
   local activeSkillName = nil
-  if build.activeSkill and build.activeSkill.activeEffect and build.activeSkill.activeEffect.grantedEffect then
+  if mainEnv and mainEnv.player and mainEnv.player.mainSkill then
+    local ms = mainEnv.player.mainSkill
+    if ms.activeEffect and ms.activeEffect.grantedEffect then
+      activeSkillName = ms.activeEffect.grantedEffect.name
+    end
+  end
+  -- Fallback to build.activeSkill (GUI context)
+  if not activeSkillName and build.activeSkill and build.activeSkill.activeEffect and build.activeSkill.activeEffect.grantedEffect then
     activeSkillName = build.activeSkill.activeEffect.grantedEffect.name
   end
 
+  -- When FullDPS is 0 (no skills marked includeInFullDPS), compute it from per-skill outputs.
+  -- Also build a per-skill DPS breakdown for all enabled socket groups.
+  local perSkillDPS = {}
+  if mainEnv and mainEnv.player and mainEnv.player.activeSkillList then
+    for _, activeSkill in ipairs(mainEnv.player.activeSkillList) do
+      if activeSkill.socketGroup and activeSkill.socketGroup.enabled then
+        local skillName = nil
+        if activeSkill.activeEffect and activeSkill.activeEffect.grantedEffect then
+          skillName = activeSkill.activeEffect.grantedEffect.name
+        end
+        if skillName then
+          -- Check if this skill's output is cached in GlobalCache (computed during BuildOutput MAIN pass)
+          local uuid = cacheSkillUUID and cacheSkillUUID(activeSkill, mainEnv) or nil
+          local skillOut = nil
+          if uuid and GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["MAIN"] and GlobalCache.cachedData["MAIN"][uuid] then
+            local cached = GlobalCache.cachedData["MAIN"][uuid]
+            skillOut = cached.Env and cached.Env.player and cached.Env.player.output
+          end
+          if skillOut then
+            t_insert(perSkillDPS, {
+              name = skillName,
+              CombinedDPS = skillOut.CombinedDPS or 0,
+              TotalDPS = skillOut.TotalDPS or 0,
+              TotalDotDPS = skillOut.TotalDotDPS or 0,
+              TotalPoisonDPS = skillOut.TotalPoisonDPS or 0,
+              PoisonDPS = skillOut.PoisonDPS,
+              WithPoisonDPS = skillOut.WithPoisonDPS or 0,
+              BleedDPS = skillOut.BleedDPS or 0,
+              IgniteDPS = skillOut.IgniteDPS or 0,
+              includeInFullDPS = activeSkill.socketGroup.includeInFullDPS or false,
+            })
+          end
+        end
+      end
+    end
+  end
+
+  -- If FullDPS is 0 (no includeInFullDPS flags set), find the best DPS skill and use its
+  -- CombinedDPS as FullDPS. Also overlay its DPS fields onto mainOutput so the caller
+  -- gets the correct damage numbers even when mainSocketGroup points to a non-DPS skill.
+  if not mainOutput.FullDPS or mainOutput.FullDPS == 0 then
+    local bestDPS = 0
+    local bestSkillOut = nil
+    local bestSkillName = nil
+    -- Find highest CombinedDPS from cached per-skill outputs
+    if mainEnv and mainEnv.player and mainEnv.player.activeSkillList then
+      for _, activeSkill in ipairs(mainEnv.player.activeSkillList) do
+        if activeSkill.socketGroup and activeSkill.socketGroup.enabled
+          and activeSkill.activeEffect and activeSkill.activeEffect.grantedEffect
+          and not activeSkill.activeEffect.grantedEffect.support then
+          local uuid = cacheSkillUUID and cacheSkillUUID(activeSkill, mainEnv) or nil
+          if uuid and GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["MAIN"] and GlobalCache.cachedData["MAIN"][uuid] then
+            local cached = GlobalCache.cachedData["MAIN"][uuid]
+            local so = cached.Env and cached.Env.player and cached.Env.player.output
+            if so and (so.CombinedDPS or 0) > bestDPS then
+              bestDPS = so.CombinedDPS
+              bestSkillOut = so
+              bestSkillName = activeSkill.activeEffect.grantedEffect.name
+            end
+          end
+        end
+      end
+    end
+    if bestSkillOut and bestDPS > (mainOutput.CombinedDPS or 0) then
+      -- Overlay the best skill's DPS fields onto mainOutput so callers get correct values
+      local dpsFields = {
+        "CombinedDPS", "TotalDPS", "TotalDotDPS", "TotalPoisonDPS", "PoisonDPS",
+        "WithPoisonDPS", "BleedDPS", "IgniteDPS", "TotalIgniteDPS", "DecayDPS",
+        "ImpaleDPS", "HitDPS", "AverageDamage", "Speed", "CritChance",
+        "CritMultiplier", "EffectiveCritChance", "PoisonChance", "PoisonDamage",
+        "TotalDot", "MirageDPS", "CullingDPS",
+      }
+      for _, field in ipairs(dpsFields) do
+        if bestSkillOut[field] ~= nil then
+          mainOutput[field] = bestSkillOut[field]
+        end
+      end
+      mainOutput.FullDPS = bestDPS
+      activeSkillName = bestSkillName
+    elseif mainOutput.CombinedDPS and mainOutput.CombinedDPS > 0 then
+      mainOutput.FullDPS = mainOutput.CombinedDPS
+    end
+  end
+
   -- Deep copy all outputs to JSON-serializable format
+  local mainOutputCopied = deepCopySafe(mainOutput)
+
   local result = {
-    mainOutput = deepCopySafe(mainOutput),
+    mainOutput = mainOutputCopied,
     output = deepCopySafe(output),
     skillOutput = deepCopySafe(skillOutput),
     breakdown = deepCopySafe(breakdown),
     config = deepCopySafe(configInput),
     skills = M.get_skills(),
     activeSkill = activeSkillName,
+    perSkillDPS = perSkillDPS,
   }
 
   return result
@@ -1492,6 +1585,7 @@ function M.get_skills()
       index = idx,
       label = g.label,
       slot = g.slot,
+      source = g.source,
       enabled = g.enabled,
       includeInFullDPS = g.includeInFullDPS,
       mainActiveSkill = g.mainActiveSkill,
@@ -1914,6 +2008,14 @@ function M.get_items()
         end
         table.insert(result, entry)
       end
+    end
+  end
+  -- DEBUG: Log orderedSlots flask entries
+  for i, slot in ipairs(ordered) do
+    if slot and slot.slotName and slot.slotName:find("Flask") then
+      local slotCtrl = itemsTab.slots[slot.slotName]
+      local selId = slotCtrl and slotCtrl.selItemId or 0
+      io.stderr:write(string.format("[get_items] orderedSlot[%d] slotName=%s selItemId=%d\n", i, slot.slotName, selId))
     end
   end
   for _, slot in ipairs(ordered) do
