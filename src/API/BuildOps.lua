@@ -1552,6 +1552,15 @@ function M.add_item_text(params)
     local slot = tostring(params.slotName)
     if build.itemsTab.slots[slot] then
       build.itemsTab.slots[slot]:SetSelItemId(item.id)
+      -- Auto-activate flasks when equipped via API (matches add_items_batch behavior)
+      if slot:match('^Flask %d$') and build.itemsTab.activeItemSet
+          and build.itemsTab.activeItemSet[slot] then
+        build.itemsTab.activeItemSet[slot].active = true
+        build.itemsTab.slots[slot].active = true
+        if build.itemsTab.slots[slot].controls and build.itemsTab.slots[slot].controls.activate then
+          build.itemsTab.slots[slot].controls.activate.state = true
+        end
+      end
       build.itemsTab:PopulateSlots()
     end
   end
@@ -1626,6 +1635,13 @@ function M.add_items_batch(params)
         if slot:match('^Flask %d$') and build.itemsTab.activeItemSet
             and build.itemsTab.activeItemSet[slot] then
           build.itemsTab.activeItemSet[slot].active = true
+          -- Also update the slot control — calc engine reads slot.active
+          if build.itemsTab.slots[slot] then
+            build.itemsTab.slots[slot].active = true
+            if build.itemsTab.slots[slot].controls and build.itemsTab.slots[slot].controls.activate then
+              build.itemsTab.slots[slot].controls.activate.state = true
+            end
+          end
         end
       end
     end
@@ -1662,6 +1678,13 @@ function M.set_flask_active(params)
   local slotName = 'Flask ' .. tostring(idx)
   if not build.itemsTab.activeItemSet or not build.itemsTab.activeItemSet[slotName] then return nil, 'slot not found' end
   build.itemsTab.activeItemSet[slotName].active = active
+  -- Also update the slot control — the calc engine reads slot.active, not activeItemSet
+  if build.itemsTab.slots[slotName] then
+    build.itemsTab.slots[slotName].active = active
+    if build.itemsTab.slots[slotName].controls and build.itemsTab.slots[slotName].controls.activate then
+      build.itemsTab.slots[slotName].controls.activate.state = active
+    end
+  end
   build.itemsTab:AddUndoState()
   build.buildFlag = true
   M.get_main_output()
@@ -1963,7 +1986,7 @@ function M.add_gem(params)
     qualityId = params.qualityId or 'Default',
     enabled = params.enabled ~= false,
     enableGlobal1 = true,
-    enableGlobal2 = false,
+    enableGlobal2 = true,
     count = tonumber(params.count) or 1,
   }
 
@@ -2767,6 +2790,8 @@ function M.set_skill_config(params)
   if build.configTab.BuildModList then
     build.configTab:BuildModList()
   end
+  -- Wipe GlobalCache so BuildOutput() recalculates with updated config
+  build.buildFlag = true
   M.get_main_output()
 
   return { ok = true, varName = params.varName, value = params.value }
@@ -2798,6 +2823,8 @@ function M.set_batch_skill_config(params)
     if build.configTab.BuildModList then
       build.configTab:BuildModList()
     end
+    -- Wipe GlobalCache so BuildOutput() recalculates with updated config
+    build.buildFlag = true
     M.get_main_output()
   end
 
