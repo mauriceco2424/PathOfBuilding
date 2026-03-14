@@ -318,6 +318,9 @@ function M.get_tree()
         out.nodeOverrides[tostring(id)] = {
           name = name,
           stats = stats,
+          icon = node.icon,
+          activeEffectImage = node.activeEffectImage,
+          reminderText = node.reminderText,
         }
       end
     end
@@ -3113,6 +3116,8 @@ function M.get_tree_node_debug(params)
       id = node.id,
       dn = node.dn,
       name = node.name,
+      icon = node.icon,
+      activeEffectImage = node.activeEffectImage,
       type = node.type,
       alloc = node.alloc == true,
       isKeystone = node.isKeystone == true,
@@ -3408,6 +3413,9 @@ function M.get_nodes_in_radius(params)
         type = nodeType,
         isAllocated = isAllocated,
         stats = stats,
+        icon = liveNode.icon,
+        activeEffectImage = liveNode.activeEffectImage,
+        reminderText = liveNode.reminderText,
         x = liveNode.x,
         y = liveNode.y,
       })
