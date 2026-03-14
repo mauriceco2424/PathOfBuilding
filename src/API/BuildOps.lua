@@ -763,7 +763,17 @@ function M.calc_with_gems(params)
     end
   end
 
-  -- 2. Apply gem modifications to LIVE state
+  -- 2. Capture baseline output BEFORE applying any modifications.
+  -- GetMiscCalculator creates a calculator from current (unmodified) build state.
+  -- Must happen here — before gem mutations — so baseOut reflects the original build.
+  local baseCalcFunc, baseOut = build.calcsTab:GetMiscCalculator()
+  local condOverride = {}
+  if params and type(params.conditions) == 'table' then
+    condOverride.conditions = params.conditions
+  end
+  baseOut = baseCalcFunc(condOverride, params and params.useFullDPS)
+
+  -- 3. Apply gem modifications to LIVE state
   local modified = false
 
   -- Handle removeGems (do first to handle indices correctly)
@@ -864,15 +874,6 @@ function M.calc_with_gems(params)
       end
     end
   end
-
-  -- 3. Capture baseline output BEFORE applying modifications
-  -- GetMiscCalculator creates a snapshot from current (unmodified) build state
-  local baseCalcFunc, baseOut = build.calcsTab:GetMiscCalculator()
-  local condOverride = {}
-  if params and type(params.conditions) == 'table' then
-    condOverride.conditions = params.conditions
-  end
-  baseOut = baseCalcFunc(condOverride, params and params.useFullDPS)
 
   -- 4. Reprocess socket groups if modified and get new output
   local out
