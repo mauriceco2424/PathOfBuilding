@@ -5,6 +5,30 @@
 --
 local t_concat = table.concat
 
+local function loadSplitZipParts(basePath)
+	local parts = { }
+	local foundAny = false
+
+	for part = 0, 99 do
+		local file = io.open(basePath .. ".part" .. part, "rb")
+		if not file then
+			if foundAny then
+				break
+			end
+		else
+			foundAny = true
+			parts[#parts + 1] = file:read("*a")
+			file:close()
+		end
+	end
+
+	if not foundAny then
+		return ""
+	end
+
+	return t_concat(parts, "")
+end
+
 -- Load legion jewel data
 local function loadJewelFile(jewelTypeName)
 	jewelTypeName = "/Data/TimelessJewelData/" .. jewelTypeName
@@ -26,22 +50,10 @@ local function loadJewelFile(jewelTypeName)
 		compressedFileAttr.modified = fileHandle:GetFileModifiedTime()
 	end
 
-	fileHandle = NewFileSearch(scriptPath .. jewelTypeName .. ".zip.part*")
-	local splitFile = { }
-	if fileHandle then
-		compressedFileAttr.modified = fileHandle:GetFileModifiedTime()
+	local splitFile = loadSplitZipParts(scriptPath .. jewelTypeName .. ".zip")
+	if splitFile ~= "" and not compressedFileAttr.modified then
+		compressedFileAttr.modified = os.time()
 	end
-	while fileHandle do
-		local fileName = fileHandle:GetFileName()
-		local file = io.open(scriptPath .. "/Data/TimelessJewelData/" .. fileName, "rb")
-		local part = tonumber(fileName:match("%.part(%d)")) or 0
-		splitFile[part + 1] = file:read("*a")
-		file:close()
-		if not fileHandle:NextFile() then
-			break
-		end
-	end
-	splitFile = t_concat(splitFile, "")
 
 	if uncompressedFileAttr.modified and uncompressedFileAttr.modified > (compressedFileAttr.modified or 0) then
 		ConPrintf("Uncompressed jewel data is up-to-date, loading " .. uncompressedFileAttr.fileName)
@@ -89,7 +101,16 @@ local function loadTimelessJewel(jewelType, nodeID)
 		return
 	end
 	-- if LUT is already loaded, and this either isn't GV, or GV has already emptied it's raw data out, return
-	if data.timelessJewelLUTs[jewelType] and data.timelessJewelLUTs[jewelType].data and (jewelType ~= 1 or data.timelessJewelLUTs[jewelType].data[nodeIndex + 1].raw == nil) then
+	if data.timelessJewelLUTs[jewelType]
+		and data.timelessJewelLUTs[jewelType].data
+		and (
+			jewelType ~= 1
+			or (
+				data.timelessJewelLUTs[jewelType].data[nodeIndex + 1]
+				and data.timelessJewelLUTs[jewelType].data[nodeIndex + 1].raw == nil
+			)
+		)
+	then
 		return
 	end
 

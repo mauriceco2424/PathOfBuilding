@@ -373,6 +373,23 @@ handlers.load_build_json = function(params)
   -- NOTE: Do NOT call newBuild() before loadBuildFromJSON - it can break the import!
   -- loadBuildFromJSON already calls SetMode which clears previous state.
   _G.loadBuildFromJSON(params.itemsJson, params.passiveSkillsJson)
+
+  -- Mirror the XML import path: give PoB extra frames to finish PostLoad-style
+  -- rebuilds (timeless jewels, cluster graphs, tree/tooltips) before any API reads.
+  if _G.runCallback then
+    _G.runCallback("OnFrame")
+    _G.runCallback("OnFrame")
+  end
+
+  -- After SetMode, the global build pointer can still reference the previous build.
+  if _G.mainObject and _G.mainObject.main and _G.mainObject.main.modes then
+    local newBuild = _G.mainObject.main.modes["BUILD"]
+    if newBuild and newBuild ~= _G.build then
+      io.stderr:write("[load_build_json] Updating _G.build to new build object\n")
+      _G.build = newBuild
+    end
+  end
+
   return { ok = true, build_id = 1 }
 end
 
@@ -398,6 +415,12 @@ handlers.get_nodes_in_radius = function(params)
   local res, err = BuildOps.get_nodes_in_radius(params or {})
   if not res then return { ok = false, error = err or 'failed to get nodes in radius' } end
   return { ok = true, result = res }
+end
+
+handlers.get_tree_node_debug = function(params)
+  local res, err = BuildOps.get_tree_node_debug(params or {})
+  if not res then return { ok = false, error = err or 'failed to get tree node debug' } end
+  return { ok = true, debug = res }
 end
 
 handlers.get_mastery_alternatives = function(params)

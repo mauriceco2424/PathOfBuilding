@@ -300,14 +300,35 @@ function M.get_tree()
     secondaryAscendClassId = tonumber(spec.curSecondaryAscendClassId or 0) or 0,
     nodes = {},
     masteryEffects = {},
+    nodeOverrides = {},
   }
-  for id, _ in pairs(spec.allocNodes or {}) do
+  for id, node in pairs(spec.allocNodes or {}) do
     table.insert(out.nodes, id)
+    if node then
+      local name = node.dn or node.name
+      local stats = {}
+      if type(node.sd) == "table" then
+        for _, stat in ipairs(node.sd) do
+          if type(stat) == "string" then
+            table.insert(stats, stat)
+          end
+        end
+      end
+      if name then
+        out.nodeOverrides[tostring(id)] = {
+          name = name,
+          stats = stats,
+        }
+      end
+    end
   end
   for mastery, effect in pairs(spec.masterySelections or {}) do
     out.masteryEffects[mastery] = effect
   end
   table.sort(out.nodes)
+  if not next(out.nodeOverrides) then
+    out.nodeOverrides = nil
+  end
 
   -- Point budget data: use PoB's built-in CountAllocNodes for accurate counts
   if spec.CountAllocNodes then
@@ -1818,6 +1839,195 @@ function M.get_items()
   -- Prefer orderedSlots for deterministic order
   local ordered = itemsTab.orderedSlots or {}
   local seen = {}
+  local addedItemIds = {}
+  local function append_item(slotName, itemId, activeSlotName)
+    if not itemId or itemId <= 0 or addedItemIds[itemId] then return nil end
+    local it = itemsTab.items[itemId]
+    if not it then return nil end
+
+    local entry = {
+      slot = slotName,
+      id = itemId,
+      name = it.name,
+      baseName = it.baseName,
+      type = it.type,
+      rarity = it.rarity,
+      raw = it.raw,
+      -- Jewel radius metadata (used for Thread of Hope / Timeless rendering)
+      jewelRadiusLabel = it.jewelRadiusLabel,
+      jewelRadiusIndex = it.jewelRadiusIndex,
+      -- Item metadata
+      itemLevel = it.itemLevel,
+      quality = it.quality,
+      -- Item flags
+      corrupted = it.corrupted or false,
+      mirrored = it.mirrored or false,
+      fractured = it.fractured or false,
+      synthesised = it.synthesised or false,
+      split = it.split or false,
+      veiled = it.veiled or false,
+      -- Influence flags
+      shaperItem = it.shaperItem or false,
+      elderItem = it.elderItem or false,
+      crusaderItem = it.crusaderItem or false,
+      redeemerItem = it.redeemerItem or false,
+      hunterItem = it.hunterItem or false,
+      warlordItem = it.warlordItem or false,
+    }
+
+    -- Affix data (prefix/suffix mod IDs and ranges)
+    entry.prefixes = {}
+    if it.prefixes then
+      for _, p in ipairs(it.prefixes) do
+        if p.modId and p.modId ~= "None" then
+          table.insert(entry.prefixes, {
+            modId = p.modId,
+            range = p.range
+          })
+        end
+      end
+    end
+    entry.suffixes = {}
+    if it.suffixes then
+      for _, s in ipairs(it.suffixes) do
+        if s.modId and s.modId ~= "None" then
+          table.insert(entry.suffixes, {
+            modId = s.modId,
+            range = s.range
+          })
+        end
+      end
+    end
+
+    -- Affix counts and limits
+    entry.prefixCount = #entry.prefixes
+    entry.suffixCount = #entry.suffixes
+    -- Most rare items have 3 prefix/suffix slots, but some bases differ
+    -- For now, use standard limits (can be enhanced later with base-specific data)
+    if it.rarity == "RARE" or it.rarity == "MAGIC" then
+      entry.maxPrefixes = it.rarity == "MAGIC" and 1 or 3
+      entry.maxSuffixes = it.rarity == "MAGIC" and 1 or 3
+    end
+
+    -- Structured mod lines
+    entry.implicitMods = {}
+    if it.implicitModLines then
+      for _, modLine in ipairs(it.implicitModLines) do
+        local mod = extractModLine(modLine)
+        if mod then
+          table.insert(entry.implicitMods, mod)
+        else
+          -- Debug: Log skipped mods for unique items
+          if it.rarity == "UNIQUE" then
+            print("[BuildOps] Skipped implicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
+          end
+        end
+      end
+    end
+
+    entry.explicitMods = {}
+    if it.explicitModLines then
+      for _, modLine in ipairs(it.explicitModLines) do
+        local mod = extractModLine(modLine)
+        if mod then
+          table.insert(entry.explicitMods, mod)
+        else
+          -- Debug: Log skipped mods for unique items
+          if it.rarity == "UNIQUE" then
+            print("[BuildOps] Skipped explicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
+          end
+        end
+      end
+    end
+
+    entry.enchantMods = {}
+    if it.enchantModLines then
+      for _, modLine in ipairs(it.enchantModLines) do
+        local mod = extractModLine(modLine)
+        if mod then table.insert(entry.enchantMods, mod) end
+      end
+    end
+
+    entry.scourgeMods = {}
+    if it.scourgeModLines then
+      for _, modLine in ipairs(it.scourgeModLines) do
+        local mod = extractModLine(modLine)
+        if mod then table.insert(entry.scourgeMods, mod) end
+      end
+    end
+
+    entry.crucibleMods = {}
+    if it.crucibleModLines then
+      for _, modLine in ipairs(it.crucibleModLines) do
+        local mod = extractModLine(modLine)
+        if mod then table.insert(entry.crucibleMods, mod) end
+      end
+    end
+
+    -- Catalyst info
+    if it.catalyst then
+      local catalystNames = {"Abrasive", "Accelerating", "Fertile", "Imbued", "Intrinsic", "Noxious", "Prismatic", "Tempering", "Turbulent", "Unstable"}
+      entry.catalyst = catalystNames[it.catalyst]
+      entry.catalystQuality = it.catalystQuality or 20
+    end
+
+    -- Requirements
+    if it.requirements then
+      entry.requirements = {
+        level = it.requirements.level,
+        str = it.requirements.str > 0 and it.requirements.str or nil,
+        dex = it.requirements.dex > 0 and it.requirements.dex or nil,
+        int = it.requirements.int > 0 and it.requirements.int or nil,
+      }
+    end
+
+    -- Sockets
+    if it.sockets and #it.sockets > 0 then
+      entry.sockets = {}
+      for _, socket in ipairs(it.sockets) do
+        table.insert(entry.sockets, {
+          color = socket.color,
+          group = socket.group
+        })
+      end
+    end
+
+    -- Defense stats (armour, evasion, energy shield, ward)
+    if it.armourData then
+      entry.armourData = {
+        armour = it.armourData.Armour,
+        evasion = it.armourData.Evasion,
+        energyShield = it.armourData.EnergyShield,
+        ward = it.armourData.Ward,
+      }
+    end
+
+    -- Flask recovery stats (life, mana, duration, charges)
+    if it.flaskData then
+      entry.flaskData = {
+        lifeTotal = it.flaskData.lifeTotal,
+        lifeGradual = it.flaskData.lifeGradual,
+        lifeInstant = it.flaskData.lifeInstant,
+        manaTotal = it.flaskData.manaTotal,
+        manaGradual = it.flaskData.manaGradual,
+        manaInstant = it.flaskData.manaInstant,
+        duration = it.flaskData.duration,
+        chargesMax = it.flaskData.chargesMax,
+        chargesUsed = it.flaskData.chargesUsed,
+        instantPerc = it.flaskData.instantPerc,
+      }
+    end
+
+    -- Flask/Tincture activation flag stored in activeItemSet
+    local set = itemsTab.activeItemSet
+    if activeSlotName and set and set[activeSlotName] and set[activeSlotName].active ~= nil then
+      entry.active = set[activeSlotName].active and true or false
+    end
+
+    table.insert(result, entry)
+    addedItemIds[itemId] = true
+    return entry
+  end
   local function add_slot(slotName)
     if seen[slotName] then return end
     seen[slotName] = true
@@ -1826,188 +2036,7 @@ function M.get_items()
     local selId = slotCtrl.selItemId or 0
     -- Only include slots with equipped items
     if selId > 0 then
-      local it = itemsTab.items[selId]
-      if it then
-        local entry = {
-          slot = slotName,
-          id = selId,
-          name = it.name,
-          baseName = it.baseName,
-          type = it.type,
-          rarity = it.rarity,
-          raw = it.raw,
-          -- Jewel radius metadata (used for Thread of Hope / Timeless rendering)
-          jewelRadiusLabel = it.jewelRadiusLabel,
-          jewelRadiusIndex = it.jewelRadiusIndex,
-          -- Item metadata
-          itemLevel = it.itemLevel,
-          quality = it.quality,
-          -- Item flags
-          corrupted = it.corrupted or false,
-          mirrored = it.mirrored or false,
-          fractured = it.fractured or false,
-          synthesised = it.synthesised or false,
-          split = it.split or false,
-          veiled = it.veiled or false,
-          -- Influence flags
-          shaperItem = it.shaperItem or false,
-          elderItem = it.elderItem or false,
-          crusaderItem = it.crusaderItem or false,
-          redeemerItem = it.redeemerItem or false,
-          hunterItem = it.hunterItem or false,
-          warlordItem = it.warlordItem or false,
-        }
-
-        -- Affix data (prefix/suffix mod IDs and ranges)
-        entry.prefixes = {}
-        if it.prefixes then
-          for _, p in ipairs(it.prefixes) do
-            if p.modId and p.modId ~= "None" then
-              table.insert(entry.prefixes, {
-                modId = p.modId,
-                range = p.range
-              })
-            end
-          end
-        end
-        entry.suffixes = {}
-        if it.suffixes then
-          for _, s in ipairs(it.suffixes) do
-            if s.modId and s.modId ~= "None" then
-              table.insert(entry.suffixes, {
-                modId = s.modId,
-                range = s.range
-              })
-            end
-          end
-        end
-
-        -- Affix counts and limits
-        entry.prefixCount = #entry.prefixes
-        entry.suffixCount = #entry.suffixes
-        -- Most rare items have 3 prefix/suffix slots, but some bases differ
-        -- For now, use standard limits (can be enhanced later with base-specific data)
-        if it.rarity == "RARE" or it.rarity == "MAGIC" then
-          entry.maxPrefixes = it.rarity == "MAGIC" and 1 or 3
-          entry.maxSuffixes = it.rarity == "MAGIC" and 1 or 3
-        end
-
-        -- Structured mod lines
-        entry.implicitMods = {}
-        if it.implicitModLines then
-          for _, modLine in ipairs(it.implicitModLines) do
-            local mod = extractModLine(modLine)
-            if mod then
-              table.insert(entry.implicitMods, mod)
-            else
-              -- Debug: Log skipped mods for unique items
-              if it.rarity == "UNIQUE" then
-                print("[BuildOps] Skipped implicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
-              end
-            end
-          end
-        end
-
-        entry.explicitMods = {}
-        if it.explicitModLines then
-          for _, modLine in ipairs(it.explicitModLines) do
-            local mod = extractModLine(modLine)
-            if mod then
-              table.insert(entry.explicitMods, mod)
-            else
-              -- Debug: Log skipped mods for unique items
-              if it.rarity == "UNIQUE" then
-                print("[BuildOps] Skipped explicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
-              end
-            end
-          end
-        end
-
-        entry.enchantMods = {}
-        if it.enchantModLines then
-          for _, modLine in ipairs(it.enchantModLines) do
-            local mod = extractModLine(modLine)
-            if mod then table.insert(entry.enchantMods, mod) end
-          end
-        end
-
-        entry.scourgeMods = {}
-        if it.scourgeModLines then
-          for _, modLine in ipairs(it.scourgeModLines) do
-            local mod = extractModLine(modLine)
-            if mod then table.insert(entry.scourgeMods, mod) end
-          end
-        end
-
-        entry.crucibleMods = {}
-        if it.crucibleModLines then
-          for _, modLine in ipairs(it.crucibleModLines) do
-            local mod = extractModLine(modLine)
-            if mod then table.insert(entry.crucibleMods, mod) end
-          end
-        end
-
-        -- Catalyst info
-        if it.catalyst then
-          local catalystNames = {"Abrasive", "Accelerating", "Fertile", "Imbued", "Intrinsic", "Noxious", "Prismatic", "Tempering", "Turbulent", "Unstable"}
-          entry.catalyst = catalystNames[it.catalyst]
-          entry.catalystQuality = it.catalystQuality or 20
-        end
-
-        -- Requirements
-        if it.requirements then
-          entry.requirements = {
-            level = it.requirements.level,
-            str = it.requirements.str > 0 and it.requirements.str or nil,
-            dex = it.requirements.dex > 0 and it.requirements.dex or nil,
-            int = it.requirements.int > 0 and it.requirements.int or nil,
-          }
-        end
-
-        -- Sockets
-        if it.sockets and #it.sockets > 0 then
-          entry.sockets = {}
-          for _, socket in ipairs(it.sockets) do
-            table.insert(entry.sockets, {
-              color = socket.color,
-              group = socket.group
-            })
-          end
-        end
-
-        -- Defense stats (armour, evasion, energy shield, ward)
-        if it.armourData then
-          entry.armourData = {
-            armour = it.armourData.Armour,
-            evasion = it.armourData.Evasion,
-            energyShield = it.armourData.EnergyShield,
-            ward = it.armourData.Ward,
-          }
-        end
-
-        -- Flask recovery stats (life, mana, duration, charges)
-        if it.flaskData then
-          entry.flaskData = {
-            lifeTotal = it.flaskData.lifeTotal,
-            lifeGradual = it.flaskData.lifeGradual,
-            lifeInstant = it.flaskData.lifeInstant,
-            manaTotal = it.flaskData.manaTotal,
-            manaGradual = it.flaskData.manaGradual,
-            manaInstant = it.flaskData.manaInstant,
-            duration = it.flaskData.duration,
-            chargesMax = it.flaskData.chargesMax,
-            chargesUsed = it.flaskData.chargesUsed,
-            instantPerc = it.flaskData.instantPerc,
-          }
-        end
-
-        -- Flask/Tincture activation flag stored in activeItemSet
-        local set = itemsTab.activeItemSet
-        if set and set[slotName] and set[slotName].active ~= nil then
-          entry.active = set[slotName].active and true or false
-        end
-        table.insert(result, entry)
-      end
+      append_item(slotName, selId, slotName)
     end
   end
   -- DEBUG: Log orderedSlots flask entries
@@ -2023,6 +2052,15 @@ function M.get_items()
   end
   -- Add any remaining slots not in ordered list
   for slotName, _ in pairs(itemsTab.slots or {}) do add_slot(slotName) end
+  local spec = build.spec or {}
+  if spec.jewels then
+    for nodeId, itemId in pairs(spec.jewels) do
+      local entry = append_item("Jewel " .. tostring(nodeId), itemId, nil)
+      if entry then
+        entry.socketNodeId = tonumber(nodeId) or nodeId
+      end
+    end
+  end
   return result
 end
 
@@ -3030,6 +3068,98 @@ function M.get_jewel_sockets()
   return result
 end
 
+-- Debug helper: inspect the live passive node state PoB is using for a specific node.
+-- params: { nodeId: number }
+function M.get_tree_node_debug(params)
+  if not build or not build.spec then
+    return nil, "build/spec not initialized"
+  end
+  if type(params) ~= "table" then
+    return nil, "invalid params"
+  end
+
+  local nodeId = tonumber(params.nodeId)
+  if not nodeId then
+    return nil, "missing or invalid nodeId"
+  end
+
+  local spec = build.spec
+  local function summarizeNode(node)
+    if not node then
+      return nil
+    end
+
+    local stats = {}
+    if type(node.sd) == "table" then
+      for _, stat in ipairs(node.sd) do
+        if type(stat) == "string" then
+          table.insert(stats, stat)
+        end
+      end
+    end
+
+    local conqueredBy = nil
+    if type(node.conqueredBy) == "table" then
+      conqueredBy = {
+        id = node.conqueredBy.id,
+        conqueror = node.conqueredBy.conqueror and {
+          type = node.conqueredBy.conqueror.type,
+          id = node.conqueredBy.conqueror.id,
+        } or nil,
+      }
+    end
+
+    return {
+      id = node.id,
+      dn = node.dn,
+      name = node.name,
+      type = node.type,
+      alloc = node.alloc == true,
+      isKeystone = node.isKeystone == true,
+      isNotable = node.isNotable == true,
+      stats = stats,
+      reminderText = node.reminderText,
+      conqueredBy = conqueredBy,
+    }
+  end
+
+  local influencingJewels = {}
+  for socketNodeId, itemId in pairs(spec.jewels or {}) do
+    local item = build.itemsTab and build.itemsTab.items and build.itemsTab.items[itemId] or nil
+    local socketNode = spec.nodes[socketNodeId]
+    local radiusIndex = item and item.jewelRadiusIndex or nil
+    local inRadius = false
+
+    if socketNode and socketNode.nodesInRadius and radiusIndex and socketNode.nodesInRadius[radiusIndex] then
+      inRadius = socketNode.nodesInRadius[radiusIndex][nodeId] ~= nil
+    end
+
+    if inRadius or socketNodeId == nodeId then
+      table.insert(influencingJewels, {
+        socketNodeId = socketNodeId,
+        itemId = itemId,
+        name = item and item.name or nil,
+        baseName = item and item.baseName or nil,
+        radiusIndex = radiusIndex,
+        jewelData = item and item.jewelData and {
+          conqueredBy = item.jewelData.conqueredBy,
+          timelessJewel = item.jewelData.conqueredBy ~= nil,
+          impossibleEscapeKeystone = item.jewelData.impossibleEscapeKeystone,
+          intuitiveLeapLike = item.jewelData.intuitiveLeapLike == true,
+        } or nil,
+      })
+    end
+  end
+
+  return {
+    nodeId = nodeId,
+    specNode = summarizeNode(spec.nodes and spec.nodes[nodeId] or nil),
+    allocNode = summarizeNode(spec.allocNodes and spec.allocNodes[nodeId] or nil),
+    treeNode = summarizeNode(spec.tree and spec.tree.nodes and spec.tree.nodes[nodeId] or nil),
+    influencingJewels = influencingJewels,
+  }
+end
+
 -- Equip a jewel to a tree socket
 -- params: { nodeId: number, text: string } or { nodeId: number, itemId: number }
 -- If nodeId is not allocated, it will be automatically allocated
@@ -3247,15 +3377,17 @@ function M.get_nodes_in_radius(params)
     }
 
     for nodeIdInRadius, node in pairs(nodesInThisRadius) do
+      local liveNode = (spec.nodes and spec.nodes[nodeIdInRadius]) or (spec.allocNodes and spec.allocNodes[nodeIdInRadius]) or node
+
       -- Determine node type
       local nodeType = "normal"
-      if node.isKeystone then
+      if liveNode.isKeystone then
         nodeType = "keystone"
-      elseif node.isNotable then
+      elseif liveNode.isNotable then
         nodeType = "notable"
-      elseif node.isJewelSocket then
+      elseif liveNode.isJewelSocket then
         nodeType = "jewel"
-      elseif node.isMastery then
+      elseif liveNode.isMastery then
         nodeType = "mastery"
       end
 
@@ -3264,20 +3396,20 @@ function M.get_nodes_in_radius(params)
 
       -- Get node stats
       local stats = {}
-      if node.sd then
-        for _, stat in ipairs(node.sd) do
+      if liveNode.sd then
+        for _, stat in ipairs(liveNode.sd) do
           table.insert(stats, stat)
         end
       end
 
       table.insert(radiusResult.nodes, {
         id = nodeIdInRadius,
-        name = node.dn or node.name or "Unknown",
+        name = liveNode.dn or liveNode.name or "Unknown",
         type = nodeType,
         isAllocated = isAllocated,
         stats = stats,
-        x = node.x,
-        y = node.y,
+        x = liveNode.x,
+        y = liveNode.y,
       })
     end
 
