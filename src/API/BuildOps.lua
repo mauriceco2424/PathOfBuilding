@@ -16,13 +16,15 @@ function M.get_main_output()
   if not build or not build.calcsTab then
     return nil, "build not initialized"
   end
-  -- Mirror Build:OnFrame() behavior: wipe GlobalCache when buildFlag is set
-  -- Without this, BuildOutput() reuses stale cached skill calculations
-  -- (e.g. calc_with_jewel would see identical before/after outputs)
-  if build.buildFlag then
-    wipeGlobalCache()
-    build.buildFlag = false
-  end
+  -- ALWAYS wipe GlobalCache before BuildOutput() to ensure idempotent results.
+  -- Previously only wiped when buildFlag was set, but this caused stale cache
+  -- reads when multiple API calls happened in sequence (e.g. set_config calls
+  -- get_main_output which populates cache, then getFullCalcs calls BuildOutput
+  -- again WITHOUT wiping — reading stale entries from the first pass).
+  -- Toggling a config key off then back on would produce different DPS because
+  -- each BuildOutput() pass read/wrote different cache entries.
+  wipeGlobalCache()
+  build.buildFlag = false
   if build.calcsTab.BuildOutput then
     build.calcsTab:BuildOutput()
   end
@@ -111,12 +113,10 @@ function M.get_full_calcs()
     return nil, 'build not initialized'
   end
 
-  -- Wipe GlobalCache if buildFlag is set (mirrors get_main_output behavior)
-  -- Without this, BuildOutput() reuses stale cached calculations
-  if build.buildFlag then
-    wipeGlobalCache()
-    build.buildFlag = false
-  end
+  -- ALWAYS wipe GlobalCache before BuildOutput() for idempotent results.
+  -- See get_main_output() comment for full rationale.
+  wipeGlobalCache()
+  build.buildFlag = false
 
   -- Ensure calculations are up to date
   if build.calcsTab.BuildOutput then
@@ -1450,18 +1450,29 @@ function M.set_config(params)
   if params.enemyPhysicalDamageReduction ~= nil then input.enemyPhysicalDamageReduction = tonumber(params.enemyPhysicalDamageReduction); changed = true end
 
   -- Skill-specific numeric vars
-  if params.multiplierWitheredStackCount ~= nil then input.multiplierWitheredStackCount = tonumber(params.multiplierWitheredStackCount); changed = true end
-  if params.conditionShockEffect ~= nil then input.conditionShockEffect = tonumber(params.conditionShockEffect); changed = true end
-  if params.conditionEnemyChilledEffect ~= nil then input.conditionEnemyChilledEffect = tonumber(params.conditionEnemyChilledEffect); changed = true end
-  if params.conditionScorchedEffect ~= nil then input.conditionScorchedEffect = tonumber(params.conditionScorchedEffect); changed = true end
-  if params.conditionBrittleEffect ~= nil then input.conditionBrittleEffect = tonumber(params.conditionBrittleEffect); changed = true end
-  if params.conditionSapEffect ~= nil then input.conditionSapEffect = tonumber(params.conditionSapEffect); changed = true end
-  if params.multiplierPoisonOnEnemy ~= nil then input.multiplierPoisonOnEnemy = tonumber(params.multiplierPoisonOnEnemy); changed = true end
-  if params.multiplierRage ~= nil then input.multiplierRage = tonumber(params.multiplierRage); changed = true end
-  if params.multiplierImpalesOnEnemy ~= nil then input.multiplierImpalesOnEnemy = tonumber(params.multiplierImpalesOnEnemy); changed = true end
-  if params.multiplierRuptureStacks ~= nil then input.multiplierRuptureStacks = tonumber(params.multiplierRuptureStacks); changed = true end
-  if params.multiplierCorrosionStackCount ~= nil then input.multiplierCorrosionStackCount = tonumber(params.multiplierCorrosionStackCount); changed = true end
-  if params.multiplierManaBurnStacks ~= nil then input.multiplierManaBurnStacks = tonumber(params.multiplierManaBurnStacks); changed = true end
+  -- When setting a numeric var to 0, also clear its placeholder so BuildModList
+  -- doesn't fall back to the auto-calculated placeholder value.
+  local placeholder = build.configTab.configSets
+    and build.configTab.configSets[build.configTab.activeConfigSetId]
+    and build.configTab.configSets[build.configTab.activeConfigSetId].placeholder
+  local function setNumericVar(varName, rawValue)
+    local val = tonumber(rawValue)
+    input[varName] = val
+    if val == 0 and placeholder then placeholder[varName] = nil end
+    changed = true
+  end
+  if params.multiplierWitheredStackCount ~= nil then setNumericVar('multiplierWitheredStackCount', params.multiplierWitheredStackCount) end
+  if params.conditionShockEffect ~= nil then setNumericVar('conditionShockEffect', params.conditionShockEffect) end
+  if params.conditionEnemyChilledEffect ~= nil then setNumericVar('conditionEnemyChilledEffect', params.conditionEnemyChilledEffect) end
+  if params.conditionScorchedEffect ~= nil then setNumericVar('conditionScorchedEffect', params.conditionScorchedEffect) end
+  if params.conditionBrittleEffect ~= nil then setNumericVar('conditionBrittleEffect', params.conditionBrittleEffect) end
+  if params.conditionSapEffect ~= nil then setNumericVar('conditionSapEffect', params.conditionSapEffect) end
+  if params.multiplierPoisonOnEnemy ~= nil then setNumericVar('multiplierPoisonOnEnemy', params.multiplierPoisonOnEnemy) end
+  if params.multiplierRage ~= nil then setNumericVar('multiplierRage', params.multiplierRage) end
+  if params.multiplierImpalesOnEnemy ~= nil then setNumericVar('multiplierImpalesOnEnemy', params.multiplierImpalesOnEnemy) end
+  if params.multiplierRuptureStacks ~= nil then setNumericVar('multiplierRuptureStacks', params.multiplierRuptureStacks) end
+  if params.multiplierCorrosionStackCount ~= nil then setNumericVar('multiplierCorrosionStackCount', params.multiplierCorrosionStackCount) end
+  if params.multiplierManaBurnStacks ~= nil then setNumericVar('multiplierManaBurnStacks', params.multiplierManaBurnStacks) end
 
   -- Custom modifiers
   if params.customMods ~= nil then input.customMods = tostring(params.customMods); changed = true end
@@ -2927,8 +2938,20 @@ function M.set_skill_config(params)
   local input = build.configTab.input or {}
   build.configTab.input = input
 
-  -- Set the config variable directly
+  -- Set the config variable directly.
+  -- When value is 0 for "count" type configs, also clear the placeholder.
+  -- BuildModList skips input[var] when it's 0 (for non-countAllowZero types)
+  -- and falls through to placeholder[var], which may have a non-zero auto-calculated
+  -- value. Clearing the placeholder ensures value=0 truly disables the config.
   input[params.varName] = params.value
+  if params.value == 0 then
+    local placeholder = build.configTab.configSets
+      and build.configTab.configSets[build.configTab.activeConfigSetId]
+      and build.configTab.configSets[build.configTab.activeConfigSetId].placeholder
+    if placeholder then
+      placeholder[params.varName] = nil
+    end
+  end
 
   -- Rebuild mod list and recalculate
   if build.configTab.BuildModList then
@@ -2955,9 +2978,17 @@ function M.set_batch_skill_config(params)
   build.configTab.input = input
   local applied = {}
 
+  local placeholder = build.configTab.configSets
+    and build.configTab.configSets[build.configTab.activeConfigSetId]
+    and build.configTab.configSets[build.configTab.activeConfigSetId].placeholder
+
   for _, entry in ipairs(params.configs) do
     if type(entry.varName) == 'string' and entry.varName ~= '' and entry.value ~= nil then
       input[entry.varName] = entry.value
+      -- Clear placeholder when value=0 so BuildModList doesn't fall back to it
+      if entry.value == 0 and placeholder then
+        placeholder[entry.varName] = nil
+      end
       applied[#applied + 1] = { varName = entry.varName, value = entry.value }
     end
   end
