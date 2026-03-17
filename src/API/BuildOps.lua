@@ -1608,10 +1608,10 @@ function M.get_skills()
             -- Dual-nature gem support (e.g., Autoexertion has both active warcry and support effect)
             hasSecondarySupport = hasSecondarySupport or nil,  -- nil if false to keep JSON clean
             secondarySupportName = secondarySupportName,
-            -- Attribute requirements (computed by PoB from gem level + base multiplier)
-            reqStr = gem.reqStr and gem.reqStr > 0 and gem.reqStr or nil,
-            reqDex = gem.reqDex and gem.reqDex > 0 and gem.reqDex or nil,
-            reqInt = gem.reqInt and gem.reqInt > 0 and gem.reqInt or nil,
+            -- Attribute requirements (use reqOverride when available, matching CalcSetup behavior)
+            reqStr = (gem.reqOverride or gem.reqStr) and (gem.reqOverride or gem.reqStr) > 0 and (gem.reqOverride or gem.reqStr) or nil,
+            reqDex = (gem.reqOverride or gem.reqDex) and (gem.reqOverride or gem.reqDex) > 0 and (gem.reqOverride or gem.reqDex) or nil,
+            reqInt = (gem.reqOverride or gem.reqInt) and (gem.reqOverride or gem.reqInt) > 0 and (gem.reqOverride or gem.reqInt) or nil,
           })
         end
       end
@@ -1986,13 +1986,17 @@ function M.get_items()
       entry.catalystQuality = it.catalystQuality or 20
     end
 
-    -- Requirements
+    -- Requirements (use modified values that account for requirement-reducing mods,
+    -- matching what CalcSetup uses for env.requirementsTableItems)
     if it.requirements then
+      local strReq = it.requirements.strMod or it.requirements.str or 0
+      local dexReq = it.requirements.dexMod or it.requirements.dex or 0
+      local intReq = it.requirements.intMod or it.requirements.int or 0
       entry.requirements = {
         level = it.requirements.level,
-        str = it.requirements.str > 0 and it.requirements.str or nil,
-        dex = it.requirements.dex > 0 and it.requirements.dex or nil,
-        int = it.requirements.int > 0 and it.requirements.int or nil,
+        str = strReq > 0 and strReq or nil,
+        dex = dexReq > 0 and dexReq or nil,
+        int = intReq > 0 and intReq or nil,
       }
     end
 
@@ -2077,6 +2081,89 @@ function M.get_items()
     end
   end
   return result
+end
+
+-- Extract attribute requirement sources from PoB's authoritative requirementsTable.
+-- Must be called AFTER get_full_calcs() which triggers BuildOutput() and populates mainEnv.
+-- Returns per-attribute sources matching what PoB internally uses for ReqStr/ReqDex/ReqInt.
+function M.get_attribute_requirements()
+  if not build or not build.calcsTab then return nil, 'build not initialized' end
+  local mainEnv = build.calcsTab.mainEnv
+  if not mainEnv then
+    return nil, 'calculations not available (call get_full_calcs first)'
+  end
+
+  local mainOutput = build.calcsTab.mainOutput or {}
+
+  -- Build per-attribute source lists from the authoritative requirementsTable
+  local reqTable = {}
+  -- Merge items and gems tables (same structure CalcPerform uses)
+  if mainEnv.requirementsTableItems then
+    for _, entry in ipairs(mainEnv.requirementsTableItems) do
+      t_insert(reqTable, entry)
+    end
+  end
+  if mainEnv.requirementsTableGems then
+    for _, entry in ipairs(mainEnv.requirementsTableGems) do
+      t_insert(reqTable, entry)
+    end
+  end
+  -- Also check the merged table if it exists
+  if #reqTable == 0 and mainEnv.requirementsTable then
+    reqTable = mainEnv.requirementsTable
+  end
+
+  local sources = { str = {}, dex = {}, int = {} }
+
+  for _, reqSource in ipairs(reqTable) do
+    for _, attr in ipairs({"Str", "Dex", "Int"}) do
+      local val = reqSource[attr]
+      if val and val > 0 then
+        local entry = { requirement = val }
+        if reqSource.source == "Item" then
+          entry.type = "item"
+          if reqSource.sourceItem then
+            entry.name = reqSource.sourceItem.name or "Unknown Item"
+          else
+            entry.name = "Unknown Item"
+          end
+          entry.slot = reqSource.sourceSlot or "Unknown"
+        elseif reqSource.source == "Gem" then
+          entry.type = "gem"
+          if reqSource.sourceGem then
+            entry.name = reqSource.sourceGem.nameSpec or "Unknown Gem"
+          else
+            entry.name = "Unknown Gem"
+          end
+          -- Try to find the slot from the gem's socket group
+          entry.slot = "Gem"
+        else
+          entry.type = "unknown"
+          entry.name = "Unknown"
+          entry.slot = "Unknown"
+        end
+        t_insert(sources[attr:lower()], entry)
+      end
+    end
+  end
+
+  return {
+    str = {
+      current = mainOutput.Str or 0,
+      required = mainOutput.ReqStr or 0,
+      sources = sources.str,
+    },
+    dex = {
+      current = mainOutput.Dex or 0,
+      required = mainOutput.ReqDex or 0,
+      sources = sources.dex,
+    },
+    int = {
+      current = mainOutput.Int or 0,
+      required = mainOutput.ReqInt or 0,
+      sources = sources.int,
+    },
+  }
 end
 
 

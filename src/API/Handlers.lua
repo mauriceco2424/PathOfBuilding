@@ -161,6 +161,12 @@ handlers.get_items = function(params)
   return { ok = true, items = list }
 end
 
+handlers.get_attribute_requirements = function(params)
+  local result, err = BuildOps.get_attribute_requirements()
+  if not result then return { ok = false, error = err } end
+  return { ok = true, requirements = result }
+end
+
 handlers.get_skills = function(params)
   local info, err = BuildOps.get_skills()
   if not info then return { ok = false, error = err } end
