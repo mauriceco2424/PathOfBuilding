@@ -305,6 +305,15 @@ local function doActorAttribsConditions(env, actor)
 		if modDB:Flag(nil, "GloomShrine") then
 			modDB:NewMod("NonChaosDamageGainAsChaos", "BASE", m_floor(10 * shrineEffectMod), "Gloom Shrine")
 		end
+		if modDB:Flag(nil, "GreaterFreezingShrine") then
+			modDB:NewMod("PhysicalDamageGainAsCold", "BASE", m_floor(30 * shrineEffectMod), "Greater Freezing Shrine")
+		end
+		if modDB:Flag(nil, "GreaterShockingShrine") then
+			modDB:NewMod("PhysicalDamageGainAsLightning", "BASE", m_floor(30 * shrineEffectMod), "Greater Shocking Shrine")
+		end
+		if modDB:Flag(nil, "GreaterSkeletalShrine") then
+			modDB:NewMod("PhysicalDamageGainAsChaos", "BASE", m_floor(30 * shrineEffectMod), "Greater Skeletal Shrine")
+		end
 		if modDB:Flag(nil, "ImpenetrableShrine") then
 			modDB:NewMod("Armour", "INC", m_floor(100 * shrineEffectMod), "Impenetrable Shrine")
 			modDB:NewMod("Evasion", "INC", m_floor(100 * shrineEffectMod), "Impenetrable Shrine")
@@ -321,6 +330,7 @@ local function doActorAttribsConditions(env, actor)
 		if modDB:Flag(nil, "ResistanceShrine") then
 			modDB:NewMod("ElementalResist", "BASE", m_floor(50 * shrineEffectMod), "Resistance Shrine")
 			modDB:NewMod("ElementalResistMax", "BASE", m_floor(10 * shrineEffectMod), "Resistance Shrine")
+			modDB:NewMod("ChaosResistMax", "BASE", m_floor(10 * shrineEffectMod), "Resistance Shrine")
 		end
 		if modDB:Flag(nil, "ResonatingShrine") then
 			modDB:NewMod("PowerChargesMax", "BASE", m_floor(1 * shrineEffectMod), "Resonating Shrine")
@@ -352,6 +362,7 @@ local function doActorAttribsConditions(env, actor)
 		if modDB:Flag(nil, "LesserResistanceShrine") then
 			modDB:NewMod("ElementalResist", "BASE", m_floor(25 * shrineEffectMod), "Lesser Resistance Shrine")
 			modDB:NewMod("ElementalResistMax", "BASE", m_floor(2 * shrineEffectMod), "Lesser Resistance Shrine")
+			modDB:NewMod("ChaosResistMax", "BASE", m_floor(2 * shrineEffectMod), "Lesser Resistance Shrine")
 		end
 	end
 	if env.mode_effective then
@@ -739,6 +750,12 @@ local function doActorMisc(env, actor)
 			modDB:NewMod("Speed", "INC", 20, "Her Embrace", ModFlag.Attack)
 			modDB:NewMod("Speed", "INC", 20, "Her Embrace", ModFlag.Cast)
 			modDB:NewMod("MovementSpeed", "INC", 20, "Her Embrace")
+		end
+		if modDB:Flag(nil, "Condition:OnConsecratedGround") then
+			local effect = 1 + modDB:Sum("INC", nil, "ConsecratedGroundEffect") / 100
+			modDB:NewMod("LifeRegenPercent", "BASE", 5 * effect, "Consecrated Ground")
+			modDB:NewMod("CurseEffectOnSelf", "INC", -50 * effect, "Consecrated Ground")
+			modDB:NewMod("Accuracy", "INC", m_floor(modDB:Sum("INC", nil, "ConsecratedGroundAlsoAccuracy") * effect), "Consecrated Ground")
 		end
 		if modDB:Flag(nil, "Condition:PhantasmalMight") then
 			modDB.multipliers["BuffOnSelf"] = (modDB.multipliers["BuffOnSelf"] or 0) + (output.ActivePhantasmLimit or 1) - 1 -- slight hack to not double count the initial buff
@@ -1167,6 +1184,9 @@ function calcs.perform(env, skipEHP)
 				env.minion.modDB:AddList(env.player.itemList["Gloves"].modList)
 			end
 		end
+		if env.player.mainSkill.skillData.minionUseMainHandWeapon then
+			env.minion.modDB:AddList(env.player.itemList["Weapon 1"].slotModList[1])
+		end
 		if env.minion.itemSet or env.minion.uses then
 			for slotName, slot in pairs(env.build.itemsTab.slots) do
 				if env.minion.uses[slotName] then
@@ -1302,7 +1322,7 @@ function calcs.perform(env, skipEHP)
 			end
 		end
 		if activeSkill.minion and activeSkill.minion.minionData and activeSkill.minion.minionData.limit then
-			local limit = m_floor(modDB:Override(nil, activeSkill.minion.minionData.limit) or (calcLib.val(activeSkill.skillModList, activeSkill.minion.minionData.limit) * (1 + activeSkill.skillModList:Sum("INC", activeSkill.skillCfg, "ActiveMinionLimit") / 100)))
+			local limit = m_floor(modDB:Override(nil, activeSkill.minion.minionData.limit) or (calcLib.val(activeSkill.skillModList, activeSkill.minion.minionData.limit) * activeSkill.skillModList:More(activeSkill.skillCfg, "ActiveMinionLimit")))
 			output[activeSkill.minion.minionData.limit] = m_max(limit, output[activeSkill.minion.minionData.limit] or 0)
 		end
 		if activeSkill.skillTypes[SkillType.CreatesMinion] and not activeSkill.skillTypes[SkillType.MinionsAreUndamagable] then
@@ -1405,16 +1425,11 @@ function calcs.perform(env, skipEHP)
 		end
 	end
 
-	if modDB:Flag(nil, "ConvertBodyArmourArmourEvasionToWard") then
-		local ward
-		local armourData = env.player.itemList["Body Armour"] and env.player.itemList["Body Armour"].armourData
-		if armourData then
-			ward = armourData.Evasion + armourData.Armour
-			if ward > 0 then
-				local wardMult = ((modDB:Sum("BASE", nil,"BodyArmourArmourEvasionToWardPercent") or 0) / 100)
-				modDB:NewMod("Ward", "BASE", ward * wardMult , "Body Armour Armour And Evasion Rating to Ward Conversion")
-			end
-		end
+	if modDB:Flag(env.player.mainSkill.skillCfg, "Condition:CanInflictHallowingFlame") then
+		local magnitude = 1 + modDB:Sum("INC", nil, "HallowingFlameMagnitude") / 100
+		local val = m_floor(25 * magnitude) -- Hallowing flame grants Attack Hits against you gain 25% of Physical Damage as Extra Fire Damage
+		modDB:NewMod("Multiplier:HallowingFlameMax", "BASE", 1, "Base")
+		modDB:NewMod("ExtraAura", "LIST", { onlyAllies = true, mod = modLib.createMod("PhysicalDamageGainAsLightning", "BASE", val, "Hallowing Flame", { type = "GlobalEffect", effectType = "Global", unscalable = true }, { type = "ActorCondition", actor = "enemy", var = "HallowingFlame" }, { type = "Multiplier", var = "HallowingFlame", actor = "enemy", limitActor = "parent", limitVar = "HallowingFlameMax" }) })
 	end
 
 	-- Special handling of Mageblood
@@ -1422,7 +1437,7 @@ function calcs.perform(env, skipEHP)
 	local maxRightActiveMagicUtilityCount = modDB:Sum("BASE", nil, "RightActiveMagicUtilityFlasks")
 	if maxLeftActiveMagicUtilityCount > 0 or maxRightActiveMagicUtilityCount > 0 then
 		local magicUtilityFlasks = {}
-		for _, slot in pairs(env.build.itemsTab.orderedSlots) do
+		for _, slot in ipairs(env.build.itemsTab.orderedSlots) do
 			local item = env.build.itemsTab.items[slot.selItemId]
 			if item and item.type == "Flask" and item.rarity == "MAGIC"
 				and not (item.baseName:match("Life Flask") or item.baseName:match("Mana Flask") or item.baseName:match("Hybrid Flask")) then
@@ -1477,6 +1492,20 @@ function calcs.perform(env, skipEHP)
 	end
 
 	-- Merge flask modifiers
+	local function getFlaskInstantRecovery(item)
+		local instantPerc = item.flaskData.instantPerc or 0
+		if modDB:Flag(nil, "Condition:LowLife") then
+			instantPerc = instantPerc + (item.flaskData.instantLowLifePerc or 0)
+		end
+		if item.base.flask.life then
+			instantPerc = instantPerc + modDB:Sum("BASE", nil, "LifeFlaskInstantRecovery")
+		end
+		if item.base.flask.mana then
+			instantPerc = instantPerc + modDB:Sum("BASE", nil, "ManaFlaskInstantRecovery")
+		end
+		return m_min(100, instantPerc)
+	end
+
 	local function calcFlaskRecovery(type, item)
 		local out = {}
 		local lType = type:lower()
@@ -1488,7 +1517,7 @@ function calcs.perform(env, skipEHP)
 		local name = item.name
 		local base = item.flaskData[lType.."Base"]
 		local dur = item.flaskData.duration
-		local instPerc = item.flaskData.instantPerc
+		local instPerc = getFlaskInstantRecovery(item)
 		local flaskRecInc = modDB:Sum("INC", nil, "Flask"..type.."Recovery")
 		local flaskRecMore = modDB:More(nil, "Flask"..type.."Recovery")
 		local flaskRateInc = modDB:Sum("INC", nil, "Flask"..type.."RecoveryRate")
@@ -1593,20 +1622,22 @@ function calcs.perform(env, skipEHP)
 		for item in pairs(flasks) do
 			flaskBuffsPerBase[item.baseName] = flaskBuffsPerBase[item.baseName] or {}
 			flaskBuffsPerBaseNonPlayer[item.baseName] = flaskBuffsPerBaseNonPlayer[item.baseName] or {}
-			flaskConditions["UsingFlask"] = true
-			flaskConditionsNonUtility["UsingFlask"] = true
-			flaskConditions["Using"..item.baseName:gsub("%s+", "")] = true
-			haveFlask["Have"..item.baseName:gsub("%s+", "")] = true
-			if item.base.flask.life or item.base.flask.mana then
-				flaskConditionsNonUtility["Using"..item.baseName:gsub("%s+", "")] = true
-			end
-			if item.base.flask.life and not modDB:Flag(nil, "CannotRecoverLifeOutsideLeech") then
-				flaskConditions["UsingLifeFlask"] = true
-				flaskConditionsNonUtility["UsingLifeFlask"] = true
-			end
-			if item.base.flask.mana then
-				flaskConditions["UsingManaFlask"] = true
-				flaskConditionsNonUtility["UsingManaFlask"] = true
+			local instantPerc = getFlaskInstantRecovery(item)
+			if instantPerc < 100 then
+				flaskConditions["UsingFlask"] = true
+				flaskConditions["Using"..item.baseName:gsub("%s+", "")] = true
+				if item.base.flask.life or item.base.flask.mana then
+					flaskConditionsNonUtility["UsingFlask"] = true
+					flaskConditionsNonUtility["Using"..item.baseName:gsub("%s+", "")] = true
+				end
+				if item.base.flask.life and not modDB:Flag(nil, "CannotRecoverLifeOutsideLeech") then
+					flaskConditions["UsingLifeFlask"] = true
+					flaskConditionsNonUtility["UsingLifeFlask"] = true
+				end
+				if item.base.flask.mana then
+					flaskConditions["UsingManaFlask"] = true
+					flaskConditionsNonUtility["UsingManaFlask"] = true
+				end
 			end
 
 			if onlyRecovery then
@@ -1622,9 +1653,6 @@ function calcs.perform(env, skipEHP)
 			else
 				calcFlaskMods(item, item.baseName, item.buffModList, item.modList)
 			end
-		end
-		for haveFlask, status in pairs(haveFlask) do
-			modDB.conditions[haveFlask] = status
 		end
 		if modDB:Flag(nil, "UtilityFlasksDoNotApplyToPlayer") then
 			for flaskCond, status in pairs(flaskConditionsNonUtility) do
@@ -1820,6 +1848,7 @@ function calcs.perform(env, skipEHP)
 				values.more = skillModList:More(skillCfg, name.."Reserved", "Reserved")
 				values.inc = skillModList:Sum("INC", skillCfg, name.."Reserved", "Reserved")
 				values.efficiency = m_max(skillModList:Sum("INC", skillCfg, name.."ReservationEfficiency", "ReservationEfficiency"), -100)
+				values.efficiencyMore = skillModList:More(skillCfg, name.."ReservationEfficiency", "ReservationEfficiency")
 				-- used for Arcane Cloak calculations in ModStore.GetStat
 				env.player[name.."Efficiency"] = values.efficiency
 				if activeSkill.skillData[name.."ReservationFlatForced"] then
@@ -1828,7 +1857,7 @@ function calcs.perform(env, skipEHP)
 					local baseFlatVal = m_floor(values.baseFlat * mult)
 					values.reservedFlat = 0
 					if values.more > 0 and values.inc > -100 and baseFlatVal ~= 0 then
-						values.reservedFlat = m_max(round(baseFlatVal * (100 + values.inc) / 100 * values.more / (1 + values.efficiency / 100), 0), 0)
+						values.reservedFlat = m_max(round(baseFlatVal * (100 + values.inc) / 100 * values.more / (1 + values.efficiency / 100) / values.efficiencyMore, 0), 0)
 					end
 				end
 				if activeSkill.skillData[name.."ReservationPercentForced"] then
@@ -1837,7 +1866,7 @@ function calcs.perform(env, skipEHP)
 					local basePercentVal = values.basePercent * mult
 					values.reservedPercent = 0
 					if values.more > 0 and values.inc > -100 and basePercentVal ~= 0 then
-						values.reservedPercent = m_max(round(basePercentVal * (100 + values.inc) / 100 * values.more / (1 + values.efficiency / 100), 2), 0)
+						values.reservedPercent = m_max(round(basePercentVal * (100 + values.inc) / 100 * values.more / (1 + values.efficiency / 100) / values.efficiencyMore, 2), 0)
 					end
 				end
 				if activeSkill.activeMineCount then
@@ -1860,6 +1889,7 @@ function calcs.perform(env, skipEHP)
 							more = values.more ~= 1 and ("x "..values.more),
 							inc = values.inc ~= 0 and ("x "..(1 + values.inc / 100)),
 							efficiency = values.efficiency ~= 0 and ("x " .. round(100 / (100 + values.efficiency), 4)),
+							efficiencyMore = values.efficiencyMore ~= 1 and ("x "..values.efficiencyMore),
 							total = values.reservedFlat,
 						})
 					end
@@ -1876,6 +1906,7 @@ function calcs.perform(env, skipEHP)
 							more = values.more ~= 1 and ("x "..values.more),
 							inc = values.inc ~= 0 and ("x "..(1 + values.inc / 100)),
 							efficiency = values.efficiency ~= 0 and ("x " .. round(100 / (100 + values.efficiency), 4)),
+							efficiencyMore = values.efficiencyMore ~= 1 and ("x "..values.efficiencyMore),
 							total = values.reservedPercent .. "%",
 						})
 					end
@@ -1970,13 +2001,6 @@ function calcs.perform(env, skipEHP)
 				modDB.multipliers["AuraAffectingSelf"] = (modDB.multipliers["AuraAffectingSelf"] or 0) + 1
 			end
 		end
-	end
-
-	-- Deal with Consecrated Ground
-	if modDB:Flag(nil, "Condition:OnConsecratedGround") then
-		local effect = 1 + modDB:Sum("INC", nil, "ConsecratedGroundEffect") / 100
-		modDB:NewMod("LifeRegenPercent", "BASE", 5 * effect, "Consecrated Ground")
-		modDB:NewMod("CurseEffectOnSelf", "INC", -50 * effect, "Consecrated Ground")
 	end
 
 	if modDB:Flag(nil, "ManaAppliesToShockEffect") then
@@ -3278,11 +3302,10 @@ function calcs.perform(env, skipEHP)
 			condition = "Chilled",
 			mods = function(num)
 				local mods = { modLib.createMod("ActionSpeed", "INC", -num, "Chill", { type = "Condition", var = "Chilled" }) }
-				if output.HasBonechill and (hasGuaranteedBonechill or enemyDB:Sum("BASE", nil, "ChillVal") > 0) then
-					t_insert(mods, modLib.createMod("ColdDamageTaken", "INC", num, "Bonechill", { type = "Condition", var = "Chilled" }))
-				end
 				if modDB:Flag(nil, "ChillEffectIncDamageTaken") then
 					t_insert(mods, modLib.createMod("DamageTaken", "INC", num, "Ahuana's Bite", { type = "Condition", var = "Chilled" }))
+				elseif output.HasBonechill and (hasGuaranteedBonechill or enemyDB:Sum("BASE", nil, "ChillVal") > 0) then
+					t_insert(mods, modLib.createMod("ColdDamageTaken", "INC", num, "Bonechill", { type = "Condition", var = "Chilled" }))
 				end
 				if modDB:Flag(nil, "ChillEffectLessDamageDealt") then
 					t_insert(mods, modLib.createMod("Damage", "MORE", -num / 2, "Shaper of Winter", { type = "Condition", var = "Chilled" }))
@@ -3426,7 +3449,7 @@ function calcs.perform(env, skipEHP)
 	-- Handle consecrated ground effects on enemies
 	if enemyDB:Flag(nil, "Condition:OnConsecratedGround") then
 		local effect = 1 + modDB:Sum("INC", nil, "ConsecratedGroundEffect") / 100
-		enemyDB:NewMod("DamageTaken", "INC", enemyDB:Sum("INC", nil, "DamageTakenConsecratedGround") * effect, "Consecrated Ground")
+		enemyDB:NewMod("DamageTaken", "INC", m_floor(enemyDB:Sum("INC", nil, "DamageTakenConsecratedGround") * effect), "Consecrated Ground")
 	end
 
 	-- Defence/offence calculations

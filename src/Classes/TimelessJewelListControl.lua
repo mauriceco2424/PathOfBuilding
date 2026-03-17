@@ -68,7 +68,7 @@ function TimelessJewelListControlClass:AddValueTooltip(tooltip, index, data)
 		end
 		local treeData = self.build.spec.tree
 		local sortedNodeLists = { }
-		for legionId, desiredNode in pairs(self.sharedList.desiredNodes) do
+		for legionId, desiredNode in pairs(self.sharedList.desiredNodes or { }) do
 			if self.list[index][legionId] then
 				if self.list[index][legionId].targetNodeNames and #self.list[index][legionId].targetNodeNames > 0 then
 					sortedNodeLists[desiredNode.desiredIdx] = "^7        " .. desiredNode.displayName .. ":\n^8                " .. t_concat(self.list[index][legionId].targetNodeNames, "\n                ")
@@ -91,7 +91,8 @@ end
 
 function TimelessJewelListControlClass:OnSelClick(index, data, doubleClick)
 	if doubleClick and self.list[index].label:match("B2B2B2") == nil then
-		local label = "[" .. data.seed .. "; " .. data.total.. "; " .. self.sharedList.socket.keystone .. "]\n"
+		local socketInfo = data.socketLabel or (self.sharedList.socket and self.sharedList.socket.keystone) or "Unknown"
+		local label = "[" .. data.seed .. "; " .. data.total.. "; " .. socketInfo .. "]\n"
 		local variant = self.sharedList.conqueror.id == 1 and 1 or (self.sharedList.conqueror.id - 1) .. "\n"
 		local itemData = [[
 Heroic Tragedy ]] .. label .. [[
@@ -99,8 +100,8 @@ Timeless Jewel
 League: Legion
 Limited to: 1 Historic
 Variant: Vorana (Black Scythe Training)
-Variant: Uhtred (The Unbreaking Circle)
-Variant: Medved (Celestial Mathematics)
+Variant: Uhtred (Celestial Mathematics)
+Variant: Medved (The Unbreaking Circle)
 Selected Variant:  ]] .. variant .. "\n" .. [[
 Radius: Large
 Implicits: 0
