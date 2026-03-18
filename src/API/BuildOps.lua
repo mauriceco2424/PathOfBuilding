@@ -2147,6 +2147,11 @@ function M.get_attribute_requirements()
     end
   end
 
+  -- Check for special flags that affect requirement interpretation
+  local modDB = mainEnv.modDB
+  local ignoreAttrReq = modDB and modDB:Flag(nil, "IgnoreAttributeRequirements") or false
+  local omniRequirements = modDB and modDB:Flag(nil, "OmniscienceRequirements") or false
+
   return {
     str = {
       current = mainOutput.Str or 0,
@@ -2163,6 +2168,9 @@ function M.get_attribute_requirements()
       required = mainOutput.ReqInt or 0,
       sources = sources.int,
     },
+    -- Flags that affect requirement interpretation
+    ignoreAttrReq = ignoreAttrReq or nil,  -- Supreme Ostentation: all requirements ignored
+    omniRequirements = omniRequirements or nil,  -- Crystallised Omniscience: requirements converted to Omni
   }
 end
 
