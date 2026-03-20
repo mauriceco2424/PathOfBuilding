@@ -3573,4 +3573,156 @@ function M.get_nodes_in_radius(params)
   }
 end
 
+-- Get flask uptime data for all equipped flasks
+-- Mirrors the uptime calculation from ItemsTab.lua tooltip (lines ~3754-3938)
+function M.get_flask_uptime_data()
+  if not build or not build.itemsTab then return nil, 'items not initialized' end
+  if not build.calcsTab or not build.calcsTab.mainEnv then return nil, 'calcs not initialized' end
+
+  local itemsTab = build.itemsTab
+  local modDB = build.calcsTab.mainEnv.modDB
+  local calcOutput = build.calcsTab.mainOutput
+  if not modDB or not calcOutput then return nil, 'modDB or output not available' end
+
+  local m_min = math.min
+  local m_floor = math.floor
+  local result = {}
+
+  for idx = 1, NUM_FLASK_SLOTS do
+    local slotName = 'Flask ' .. tostring(idx)
+    local slotCtrl = itemsTab.slots[slotName]
+    if slotCtrl and slotCtrl.selItemId and slotCtrl.selItemId > 0 then
+      local item = itemsTab.items[slotCtrl.selItemId]
+      if item and item.base and item.base.flask and item.flaskData then
+        local ok2, entry = pcall(function()
+          local flaskData = item.flaskData
+          local durInc = modDB:Sum("INC", nil, "FlaskDuration")
+          local effectInc = modDB:Sum("INC", { actor = "player" }, "FlaskEffect")
+
+          if item.rarity == "MAGIC" and not item.base.flask.life and not item.base.flask.mana then
+            effectInc = effectInc + modDB:Sum("INC", { actor = "player" }, "MagicUtilityFlaskEffect")
+          end
+
+          -- Effective charges used
+          local usedInc = modDB:Sum("INC", nil, "FlaskChargesUsed")
+          local flaskChargesUsed = flaskData.chargesUsed * (1 + usedInc / 100)
+          local maxUses = flaskChargesUsed > 0 and m_floor(flaskData.chargesMax / flaskChargesUsed) or 0
+
+          -- Charge gain modifier
+          local gainMod = flaskData.gainMod * (1 + modDB:Sum("INC", nil, "FlaskChargesGained") / 100)
+
+          -- Charge generation per second
+          local chargesGenerated = modDB:Sum("BASE", nil, "FlaskChargesGenerated")
+          if item.base.flask.life then
+            chargesGenerated = chargesGenerated + modDB:Sum("BASE", nil, "LifeFlaskChargesGenerated")
+          end
+          if item.base.flask.mana then
+            chargesGenerated = chargesGenerated + modDB:Sum("BASE", nil, "ManaFlaskChargesGenerated")
+          end
+          if not item.base.flask.mana and not item.base.flask.life then
+            chargesGenerated = chargesGenerated + modDB:Sum("BASE", nil, "UtilityFlaskChargesGenerated")
+          end
+
+          -- Per-empty-flask charge generation
+          local chargesGeneratedPerFlask = modDB:Sum("BASE", nil, "FlaskChargesGeneratedPerEmptyFlask")
+          local emptyFlaskSlots = 0
+          for sName, slot in pairs(itemsTab.slots) do
+            if sName:find("^Flask") ~= nil and slot.selItemId == 0 then
+              emptyFlaskSlots = emptyFlaskSlots + 1
+            end
+          end
+          chargesGeneratedPerFlask = chargesGeneratedPerFlask * emptyFlaskSlots
+          chargesGenerated = chargesGenerated * gainMod
+          chargesGeneratedPerFlask = chargesGeneratedPerFlask * gainMod
+          local totalChargesGenerated = chargesGenerated + chargesGeneratedPerFlask
+
+          -- Chance to not consume charges
+          local chanceToNotConsumeCharges = m_min(modDB:Sum("BASE", nil, "FlaskChanceNotConsumeCharges"), 100)
+
+          -- Flask uptime calculation (mirrors ItemsTab.lua logic)
+          local hasUptime = not item.base.flask.life and not item.base.flask.mana
+          local flaskDuration = flaskData.duration * (1 + durInc / 100)
+
+          -- Life/mana flask duration needs rateInc adjustment
+          local rateInc = 0
+          if item.base.flask.life or item.base.flask.mana then
+            rateInc = modDB:Sum("INC", nil, "FlaskRecoveryRate")
+          end
+
+          local lifeDur = 0
+          local manaDur = 0
+          if item.base.flask.life then
+            local lifeRateInc = modDB:Sum("INC", nil, "FlaskLifeRecoveryRate")
+            lifeDur = flaskData.duration * (1 + durInc / 100) / (1 + rateInc / 100) / (1 + lifeRateInc / 100)
+            if flaskData.lifeEffectNotRemoved or modDB:Flag(nil, "LifeFlaskEffectNotRemoved") then
+              hasUptime = true
+              flaskDuration = lifeDur
+            end
+          elseif item.base.flask.mana then
+            local manaRateInc = modDB:Sum("INC", nil, "FlaskManaRecoveryRate")
+            manaDur = flaskData.duration * (1 + durInc / 100) / (1 + rateInc / 100) / (1 + manaRateInc / 100)
+            if flaskData.manaEffectNotRemoved or modDB:Flag(nil, "ManaFlaskEffectNotRemoved") then
+              hasUptime = true
+              flaskDuration = manaDur
+            end
+          end
+
+          local percentageMin = nil
+          local percentageAvg = nil
+
+          if hasUptime and flaskChargesUsed > 0 and flaskDuration > 0 then
+            local per3Duration = flaskDuration - (flaskDuration % 3)
+            local per5Duration = flaskDuration - (flaskDuration % 5)
+            local minimumChargesGenerated = per3Duration * chargesGenerated + per5Duration * chargesGeneratedPerFlask
+            percentageMin = m_min(minimumChargesGenerated / flaskChargesUsed * 100, 100)
+
+            if percentageMin < 100 and chanceToNotConsumeCharges < 100 then
+              local averageChargesGenerated = (chargesGenerated + chargesGeneratedPerFlask) * flaskDuration
+              local averageChargesUsed = flaskChargesUsed * (100 - chanceToNotConsumeCharges) / 100
+              percentageAvg = m_min(averageChargesGenerated / averageChargesUsed * 100, 100)
+            else
+              percentageMin = 100
+              percentageAvg = 100
+            end
+          end
+
+          local effectMod = 1 + (flaskData.effectInc + effectInc) / 100
+
+          return {
+            slot = idx,
+            name = item.name or "Unknown",
+            baseName = item.baseName or item.name or "Unknown",
+            isLifeFlask = item.base.flask.life and true or false,
+            isManaFlask = item.base.flask.mana and true or false,
+            isUtility = (not item.base.flask.life and not item.base.flask.mana) and true or false,
+            duration = flaskDuration,
+            chargesMax = flaskData.chargesMax,
+            chargesUsed = m_floor(flaskChargesUsed),
+            maxUses = maxUses,
+            chargesGeneratedPerSec = totalChargesGenerated,
+            chanceToNotConsume = chanceToNotConsumeCharges,
+            effectModifier = effectMod,
+            gainModifier = gainMod,
+            hasUptime = hasUptime,
+            uptimeMin = percentageMin,
+            uptimeAvg = percentageAvg,
+          }
+        end)
+
+        if ok2 and entry then
+          t_insert(result, entry)
+        else
+          t_insert(result, {
+            slot = idx,
+            name = item.name or "Unknown",
+            error = not ok2 and tostring(entry) or "failed to compute uptime",
+          })
+        end
+      end
+    end
+  end
+
+  return result
+end
+
 return M

@@ -471,6 +471,12 @@ handlers.get_mastery_alternatives = function(params)
   return { ok = true, result = result }
 end
 
+handlers.get_flask_uptime_data = function(params)
+  local data, err = BuildOps.get_flask_uptime_data()
+  if not data then return { ok = false, error = err } end
+  return { ok = true, flasks = data }
+end
+
 handlers.gc_collect = function(params)
   collectgarbage("collect")
   collectgarbage("collect")
