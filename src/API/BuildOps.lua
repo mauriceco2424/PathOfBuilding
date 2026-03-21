@@ -1509,7 +1509,26 @@ function M.set_config(params)
     changed = true
   end
 
+  -- Preserve ALL input vars across BuildModList().
+  -- BuildModList() rebuilds the modifier list from ConfigOptions, which can
+  -- reset vars that were set via the API but not explicitly passed in this
+  -- set_config call. Snapshot the entire input table before rebuild, then
+  -- restore any values that were wiped. Only restore keys that were NOT
+  -- explicitly set by THIS call (tracked via the params table).
+  local savedInput = {}
+  for k, v in pairs(input) do
+    savedInput[k] = v
+  end
+
   if changed and build.configTab.BuildModList then build.configTab:BuildModList() end
+
+  -- Restore any input vars that were wiped by BuildModList but were NOT
+  -- explicitly changed by this set_config call
+  for k, v in pairs(savedInput) do
+    if input[k] ~= v and params[k] == nil then
+      input[k] = v
+    end
+  end
   -- Wipe GlobalCache so BuildOutput() recalculates with updated config
   -- (e.g. customMods changing resistances must invalidate cached EHP)
   build.buildFlag = true
