@@ -796,9 +796,20 @@ function M.calc_with_gems(params)
 
     local searchTerm = tostring(identifier)
 
+    -- Build alternate search terms: with/without " Support" suffix
+    -- PoB gem database uses names WITHOUT "Support" (e.g., "Deadly Ailments")
+    -- but RepOE/gems.json uses WITH "Support" (e.g., "Deadly Ailments Support")
+    local altSearchTerm = nil
+    if searchTerm:sub(-8) == " Support" then
+      altSearchTerm = searchTerm:sub(1, -9)  -- strip " Support"
+    else
+      altSearchTerm = searchTerm .. " Support"  -- add " Support"
+    end
+
     for _, gemData in pairs(build.data.gems) do
-      -- Try name match first (display name)
-      if gemData.name == searchTerm or gemData.nameSpec == searchTerm then
+      -- Try name match first (display name), including alternate suffix form
+      if gemData.name == searchTerm or gemData.nameSpec == searchTerm
+         or gemData.name == altSearchTerm or gemData.nameSpec == altSearchTerm then
         return gemData
       end
       -- Try skillId match (grantedEffect.id like "SupportBurningDamage")
@@ -2240,10 +2251,17 @@ function M.add_gem(params)
     count = tonumber(params.count) or 1,
   }
 
-  -- Try to find gem data
+  -- Try to find gem data (handle with/without " Support" suffix mismatch)
+  local altNameSpec = nil
+  if gemInstance.nameSpec:sub(-8) == " Support" then
+    altNameSpec = gemInstance.nameSpec:sub(1, -9)
+  else
+    altNameSpec = gemInstance.nameSpec .. " Support"
+  end
   if build.data and build.data.gems then
     for _, gemData in pairs(build.data.gems) do
-      if gemData.name == gemInstance.nameSpec or gemData.nameSpec == gemInstance.nameSpec then
+      if gemData.name == gemInstance.nameSpec or gemData.nameSpec == gemInstance.nameSpec
+         or gemData.name == altNameSpec or gemData.nameSpec == altNameSpec then
         gemInstance.gemId = gemData.id
         if gemData.grantedEffect then
           gemInstance.skillId = gemData.grantedEffect.id
