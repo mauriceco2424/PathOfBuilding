@@ -674,26 +674,91 @@ end
 
 -- Calculate what-if scenario without persisting changes
 -- params: { addNodes?: number[], removeNodes?: number[], masteryOverrides?: { [nodeId]: effectId }, conditions?: string[], useFullDPS?: boolean }
--- Returns: { output = {...}, baseOutput = {...} } or nil, error
+-- Returns: { output = {...}, baseOutput = {...}, diagnostics = {...} } or nil, error
 function M.calc_with(params)
   if not build or not build.calcsTab then return nil, 'build not initialized' end
   local calcFunc, baseOut = build.calcsTab:GetMiscCalculator()
   local override = {}
+
+  -- Diagnostics: track resolution failures so TypeScript can surface them
+  local diagnostics = {
+    addRequested = 0,
+    addResolved = 0,
+    addUnresolved = {},
+    removeRequested = 0,
+    removeResolved = 0,
+    removeUnresolved = {},
+  }
+
   if params and type(params.addNodes) == 'table' then
     local addNodes = {}
     local hasAddNodes = false
+    diagnostics.addRequested = #params.addNodes
     for _, id in ipairs(params.addNodes) do
-      local n = build.spec and build.spec.nodes and build.spec.nodes[tonumber(id)]
-      if n then addNodes[n] = true; hasAddNodes = true end
+      local nid = tonumber(id)
+      local n = nid and build.spec and build.spec.nodes and build.spec.nodes[nid]
+      if n then
+        addNodes[n] = true
+        hasAddNodes = true
+        diagnostics.addResolved = diagnostics.addResolved + 1
+      else
+        -- Fallback: check allocNodes directly (cluster/subgraph nodes may have
+        -- different object refs after jewel subgraph rebuilds)
+        local allocNode = nid and build.spec and build.spec.allocNodes and build.spec.allocNodes[nid]
+        if allocNode then
+          addNodes[allocNode] = true
+          hasAddNodes = true
+          diagnostics.addResolved = diagnostics.addResolved + 1
+          io.stderr:write(string.format("[calc_with] addNode %s resolved via allocNodes fallback\n", tostring(id)))
+        else
+          table.insert(diagnostics.addUnresolved, id)
+          io.stderr:write(string.format("[calc_with] WARN: addNode %s not found in spec.nodes or allocNodes\n", tostring(id)))
+        end
+      end
     end
     if hasAddNodes then override.addNodes = addNodes end
   end
   if params and type(params.removeNodes) == 'table' then
     local removeNodes = {}
     local hasRemoveNodes = false
+    diagnostics.removeRequested = #params.removeNodes
     for _, id in ipairs(params.removeNodes) do
-      local n = build.spec and build.spec.nodes and build.spec.nodes[tonumber(id)]
-      if n then removeNodes[n] = true; hasRemoveNodes = true end
+      local nid = tonumber(id)
+      local n = nid and build.spec and build.spec.nodes and build.spec.nodes[nid]
+      if n then
+        -- Verify this node is actually allocated (removing unallocated node is a no-op)
+        local isAllocated = build.spec.allocNodes and build.spec.allocNodes[nid]
+        if isAllocated then
+          removeNodes[n] = true
+          hasRemoveNodes = true
+          diagnostics.removeResolved = diagnostics.removeResolved + 1
+        else
+          -- Node exists in spec but isn't allocated — try allocNodes lookup
+          -- (in case allocNodes has a different object ref for this ID)
+          local allocNode = build.spec.allocNodes and build.spec.allocNodes[nid]
+          if allocNode then
+            removeNodes[allocNode] = true
+            hasRemoveNodes = true
+            diagnostics.removeResolved = diagnostics.removeResolved + 1
+            io.stderr:write(string.format("[calc_with] removeNode %s: spec.nodes ref != allocNodes ref, using allocNodes\n", tostring(id)))
+          else
+            table.insert(diagnostics.removeUnresolved, id)
+            io.stderr:write(string.format("[calc_with] WARN: removeNode %s found in spec.nodes but NOT allocated — removal is a no-op\n", tostring(id)))
+          end
+        end
+      else
+        -- Not in spec.nodes at all — try allocNodes directly
+        local allocNode = nid and build.spec and build.spec.allocNodes and build.spec.allocNodes[nid]
+        if allocNode then
+          removeNodes[allocNode] = true
+          hasRemoveNodes = true
+          diagnostics.removeResolved = diagnostics.removeResolved + 1
+          io.stderr:write(string.format("[calc_with] removeNode %s resolved via allocNodes fallback (not in spec.nodes)\n", tostring(id)))
+        else
+          table.insert(diagnostics.removeUnresolved, id)
+          io.stderr:write(string.format("[calc_with] WARN: removeNode %s not found in spec.nodes or allocNodes\n", tostring(id)))
+        end
+      end
     end
     if hasRemoveNodes then override.removeNodes = removeNodes end
   end
@@ -710,12 +775,39 @@ function M.calc_with(params)
   if params and type(params.conditions) == 'table' then
     override.conditions = params.conditions
   end
+
+  -- Log override state for debugging 0% results
+  local hasOverride = override.addNodes or override.removeNodes or override.masteryOverrides or override.conditions
+  if not hasOverride then
+    io.stderr:write(string.format(
+      "[calc_with] WARNING: Override is EMPTY after resolution (add: %d/%d, remove: %d/%d) — will return identical before/after\n",
+      diagnostics.addResolved, diagnostics.addRequested,
+      diagnostics.removeResolved, diagnostics.removeRequested
+    ))
+  end
+
   local out = calcFunc(override, params and params.useFullDPS)
+
+  -- Log key stats for debugging
+  local baseFullDPS = baseOut and baseOut.FullDPS or 0
+  local afterFullDPS = out and out.FullDPS or 0
+  local baseTotalDPS = baseOut and baseOut.TotalDPS or 0
+  local afterTotalDPS = out and out.TotalDPS or 0
+  if diagnostics.addRequested > 0 or diagnostics.removeRequested > 0 then
+    io.stderr:write(string.format(
+      "[calc_with] Stats: FullDPS %d->%d, TotalDPS %d->%d, Life %d->%d, EHP %d->%d\n",
+      baseFullDPS, afterFullDPS,
+      baseTotalDPS, afterTotalDPS,
+      (baseOut and baseOut.Life or 0), (out and out.Life or 0),
+      (baseOut and baseOut.TotalEHP or 0), (out and out.TotalEHP or 0)
+    ))
+  end
 
   -- Use deepCopySafe to strip circular references and non-serializable values
   return {
     output = deepCopySafe(out),
     baseOutput = deepCopySafe(baseOut),
+    diagnostics = diagnostics,
   }
 end
 
