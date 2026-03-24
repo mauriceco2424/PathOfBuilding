@@ -1228,8 +1228,17 @@ function M.calc_with_jewel(params)
     wipeTable(spec.jewels)
     for k, v in pairs(savedJewels) do spec.jewels[k] = v end
 
-    -- g. Delete test item from items list
+    -- g. Delete test item from items list AND itemOrderList
+    --    (matches DeleteItem pattern in ItemsTab.lua:1554-1558)
+    --    Without the itemOrderList cleanup, exportBuildXml() crashes on
+    --    Classes/ItemsTab.lua:1121 when iterating orphaned nil entries.
     if createdItemId and itemsTab.items[createdItemId] then
+      for idx, id in pairs(itemsTab.itemOrderList) do
+        if id == createdItemId then
+          table.remove(itemsTab.itemOrderList, idx)
+          break
+        end
+      end
       itemsTab.items[createdItemId] = nil
     end
 
