@@ -2654,11 +2654,11 @@ function M.search_nodes(params)
     -- Filter by node type if specified
     if nodeType then
       local nType = 'normal'
-      if node.isKeystone then nType = 'keystone'
+      if node.ascendancyName then nType = 'ascendancy'
+      elseif node.isKeystone then nType = 'keystone'
       elseif node.isNotable then nType = 'notable'
       elseif node.isJewelSocket then nType = 'jewel'
       elseif node.isMultipleChoiceOption then nType = 'mastery'
-      elseif node.ascendancyName then nType = 'ascendancy'
       end
       if nType ~= nodeType then goto continue end
     end
@@ -2692,11 +2692,11 @@ function M.search_nodes(params)
 
     if matches then
       local nodeType = 'normal'
-      if node.isKeystone then nodeType = 'keystone'
+      if node.ascendancyName then nodeType = 'ascendancy'
+      elseif node.isKeystone then nodeType = 'keystone'
       elseif node.isNotable then nodeType = 'notable'
       elseif node.isJewelSocket then nodeType = 'jewel'
       elseif node.isMultipleChoiceOption then nodeType = 'mastery'
-      elseif node.ascendancyName then nodeType = 'ascendancy'
       end
 
       local stats = {}
