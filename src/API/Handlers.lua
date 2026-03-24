@@ -254,7 +254,7 @@ handlers.calc_with = function(params)
   checkMemoryPressure()
   local result, err = BuildOps.calc_with(params or {})
   if not result then return { ok = false, error = err } end
-  return { ok = true, output = result.output, baseOutput = result.baseOutput }
+  return { ok = true, output = result.output, baseOutput = result.baseOutput, diagnostics = result.diagnostics }
 end
 
 handlers.calc_with_gems = function(params)

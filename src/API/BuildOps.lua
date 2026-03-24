@@ -678,6 +678,71 @@ end
 function M.calc_with(params)
   if not build or not build.calcsTab then return nil, 'build not initialized' end
   local calcFunc, baseOut = build.calcsTab:GetMiscCalculator()
+
+  -- Fix: When the cached calculator has 0 DPS (mainSocketGroup points to a
+  -- non-DPS skill like an aura), create a fresh calculator with the correct
+  -- main socket group. This mirrors the "best skill overlay" in get_main_output
+  -- but applies it at the calculator level so both base and override use the
+  -- correct DPS skill.
+  -- NOTE: bestGroupIdx is declared here (outside the if block) because the
+  -- calcFunc closure captures `build` by reference — when calcFunc(override)
+  -- is called later, it reads build.mainSocketGroup again via initEnv().
+  -- We must temporarily set build.mainSocketGroup = bestGroupIdx around that
+  -- call too, not just around getMiscCalculator().
+  local bestGroupIdx = nil
+  local baseCombined = baseOut and baseOut.CombinedDPS or 0
+  local baseFullDPSCheck = baseOut and baseOut.FullDPS or 0
+  local baseTotalDPSCheck = baseOut and baseOut.TotalDPS or 0
+  if baseCombined == 0 and baseFullDPSCheck == 0 and baseTotalDPSCheck == 0 then
+    -- Find the best DPS socket group from GlobalCache MAIN mode data
+    local bestDPS = 0
+    local socketGroupList = build.skillsTab and build.skillsTab.socketGroupList
+    local mainEnv = build.calcsTab and build.calcsTab.mainEnv
+    if socketGroupList and mainEnv and mainEnv.player and mainEnv.player.activeSkillList
+      and GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["MAIN"] then
+      for idx, group in ipairs(socketGroupList) do
+        if group.enabled then
+          for _, activeSkill in ipairs(mainEnv.player.activeSkillList) do
+            if activeSkill.socketGroup == group
+              and activeSkill.activeEffect and activeSkill.activeEffect.grantedEffect
+              and not activeSkill.activeEffect.grantedEffect.support then
+              local uuid = cacheSkillUUID and cacheSkillUUID(activeSkill, mainEnv) or nil
+              if uuid and GlobalCache.cachedData["MAIN"][uuid] then
+                local cached = GlobalCache.cachedData["MAIN"][uuid]
+                local so = cached.Env and cached.Env.player and cached.Env.player.output
+                if so and (so.CombinedDPS or 0) > bestDPS then
+                  bestDPS = so.CombinedDPS
+                  bestGroupIdx = idx
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    if bestGroupIdx and bestGroupIdx ~= build.mainSocketGroup then
+      io.stderr:write(string.format(
+        "[calc_with] DPS fix: mainSocketGroup %d has 0 DPS, switching to group %d (CombinedDPS=%d)\n",
+        build.mainSocketGroup or 0, bestGroupIdx, bestDPS
+      ))
+      local savedMainSocketGroup = build.mainSocketGroup
+      build.mainSocketGroup = bestGroupIdx
+      local freshCalcResults = nil
+      local ok, errMsg = pcall(function()
+        local calcsModule = build.calcsTab.calcs
+        local f, b = calcsModule.getMiscCalculator(build)
+        freshCalcResults = { calcFunc = f, baseOut = b }
+      end)
+      build.mainSocketGroup = savedMainSocketGroup
+      if ok and freshCalcResults then
+        calcFunc = freshCalcResults.calcFunc
+        baseOut = freshCalcResults.baseOut
+      else
+        io.stderr:write(string.format("[calc_with] DPS fix: failed to create fresh calculator: %s\n", tostring(errMsg)))
+      end
+    end
+  end
+
   local override = {}
 
   -- Diagnostics: track resolution failures so TypeScript can surface them
@@ -786,7 +851,18 @@ function M.calc_with(params)
     ))
   end
 
+  -- If the DPS fix found a better group, temporarily switch mainSocketGroup
+  -- so the calcFunc closure (which reads build.mainSocketGroup via initEnv)
+  -- uses the correct DPS skill for the override calculation too.
+  local savedMainSocketGroupForCalc = nil
+  if bestGroupIdx and bestGroupIdx ~= build.mainSocketGroup then
+    savedMainSocketGroupForCalc = build.mainSocketGroup
+    build.mainSocketGroup = bestGroupIdx
+  end
   local out = calcFunc(override, params and params.useFullDPS)
+  if savedMainSocketGroupForCalc then
+    build.mainSocketGroup = savedMainSocketGroupForCalc
+  end
 
   -- Log key stats for debugging
   local baseFullDPS = baseOut and baseOut.FullDPS or 0
