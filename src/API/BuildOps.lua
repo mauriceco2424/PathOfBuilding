@@ -1658,94 +1658,69 @@ function M.calc_with_cluster_chain(params)
     for k, _ in pairs(spec.nodes) do postPrimaryNodeKeys[k] = true end
 
     -- 4e. Equip medium jewels in nested sockets (if we equipped a Large and have mediums)
+    local equippedMediums = 0
     if hasLarge and #remainingMediums > 0 then
-      -- Find newly created nested sockets.
-      -- After BuildClusterJewelGraphs, cluster subgraph nodes (including nested
-      -- jewel sockets) are in spec.nodes but may not be in itemsTab.sockets yet.
-      -- We scan spec.nodes for new jewel socket nodes (type "Socket" with expansionJewel).
-      local nestedSockets = {}
+      -- After equipping a Large cluster, BuildClusterJewelGraphs creates subgraph nodes
+      -- including nested jewel sockets. These sockets are in spec.nodes but NOT in
+      -- itemsTab.sockets (they're unallocated). We can't use the socket controller
+      -- (SetSelItemId) because UpdateSockets only registers ALLOCATED sockets, and
+      -- BuildAllDependsAndPaths destroys/recreates subgraph nodes, invalidating allocations.
+      --
+      -- BYPASS: Set spec.jewels[nestedSocketId] = mediumItemId directly. This is PoB's
+      -- internal jewel-to-socket mapping. Then call BuildClusterJewelGraphs() which
+      -- destroys and recreates ALL subgraphs from spec.jewels. During rebuild, it finds
+      -- the Medium jewels in nested sockets and recursively creates their subgraphs.
 
-      -- First check itemsTab.sockets (preferred — gives us the socket control directly)
-      for nid, ctrl in pairs(itemsTab.sockets) do
-        if not savedSocketSelIds[nid] then
-          local node = spec.nodes[nid]
-          if node and node.expansionJewel then
-            t_insert(nestedSockets, { nodeId = nid, ctrl = ctrl })
-          end
+      -- Find new Socket nodes created by the Large cluster's subgraph
+      local nestedSocketIds = {}
+      for k, node in pairs(spec.nodes) do
+        if not savedNodeKeys[k] and node.type == "Socket" and node.expansionJewel then
+          t_insert(nestedSocketIds, k)
         end
       end
+      table.sort(nestedSocketIds)
 
-      -- If none found in itemsTab.sockets, try to find them in spec.nodes directly
-      -- and allocate them so they appear as sockets
-      if #nestedSockets == 0 then
-        io.stderr:write("[calc_with_cluster_chain] No nested sockets in itemsTab, scanning spec.nodes...\n")
-        local socketCandidates = {}
-        for k, node in pairs(spec.nodes) do
-          if not savedNodeKeys[k] and node.type == "Socket" and node.expansionJewel then
-            t_insert(socketCandidates, node)
-          end
-        end
-        -- Allocate these socket nodes so PoB registers them as sockets
-        if #socketCandidates > 0 then
-          for _, sockNode in ipairs(socketCandidates) do
-            if not spec.allocNodes[sockNode.id] then
-              sockNode.alloc = true
-              spec.allocNodes[sockNode.id] = sockNode
-            end
-          end
-          -- Rebuild to register new sockets
-          spec:BuildAllDependsAndPaths()
-          itemsTab:UpdateSockets()
-          build.buildFlag = true
-          M.get_main_output()
-          -- Now check itemsTab.sockets again
-          for nid, ctrl in pairs(itemsTab.sockets) do
-            if not savedSocketSelIds[nid] then
-              local node = spec.nodes[nid]
-              if node and node.expansionJewel then
-                t_insert(nestedSockets, { nodeId = nid, ctrl = ctrl })
-              end
-            end
-          end
-          io.stderr:write(string.format("[calc_with_cluster_chain] After allocating socket nodes: found %d nested sockets\n", #nestedSockets))
-        end
-      end
+      io.stderr:write(string.format("[calc_with_cluster_chain] Found %d nested socket nodes in Large subgraph\n", #nestedSocketIds))
 
-      -- Sort for deterministic ordering
-      table.sort(nestedSockets, function(a, b) return a.nodeId < b.nodeId end)
-
-      local equippedMediums = 0
+      -- Create and equip each medium directly via spec.jewels
       for i, mt in ipairs(remainingMediums) do
-        if i > #nestedSockets then
-          -- No more nested sockets available — not an error, just skip
-          io.stderr:write(string.format("[calc_with_cluster_chain] No nested socket for medium #%d, skipping\n", i))
+        if i > #nestedSocketIds then
+          io.stderr:write(string.format("[calc_with_cluster_chain] No nested socket for medium #%d (only %d available), skipping\n", i, #nestedSocketIds))
           break
         end
 
-        local nestedInfo = nestedSockets[i]
         local mParseOk, mediumItem = pcall(new, 'Item', mt)
         if not mParseOk then
           io.stderr:write(string.format("[calc_with_cluster_chain] Failed to parse medium #%d: %s\n", i, tostring(mediumItem)))
         else
           if mediumItem and mediumItem.baseName and mediumItem.type == 'Jewel' then
             mediumItem:NormaliseQuality()
-            itemsTab:AddItem(mediumItem, true)
+            itemsTab:AddItem(mediumItem, true) -- noAutoEquip
             t_insert(createdItemIds, mediumItem.id)
-            nestedInfo.ctrl:SetSelItemId(mediumItem.id)
-            itemsTab:PopulateSlots()
+
+            -- Direct jewel mapping bypass — spec.jewels is what BuildClusterJewelGraphs reads
+            local nestedSocketId = nestedSocketIds[i]
+            spec.jewels[nestedSocketId] = mediumItem.id
             equippedMediums = equippedMediums + 1
+            io.stderr:write(string.format("[calc_with_cluster_chain] Equipped medium #%d (item %d) in nested socket %d via spec.jewels\n", i, mediumItem.id, nestedSocketId))
           else
             io.stderr:write(string.format("[calc_with_cluster_chain] Medium #%d is not a valid jewel\n", i))
           end
         end
       end
 
-      -- Rebuild if we equipped any mediums (creates medium subgraphs + links)
+      -- Rebuild cluster subgraphs to create medium subgraphs from the spec.jewels mapping.
+      -- CRITICAL: Must call BuildClusterJewelGraphs(), NOT just BuildAllDependsAndPaths().
+      -- BuildAllDependsAndPaths only rebuilds depends/paths but does NOT create cluster
+      -- subgraphs. BuildClusterJewelGraphs destroys and recreates ALL subgraphs, then
+      -- internally calls BuildAllDependsAndPaths. During recreation, it finds the Medium
+      -- jewels in spec.jewels[nestedSocketId] and recursively creates Medium subgraphs.
       if equippedMediums > 0 then
-        spec:BuildAllDependsAndPaths()
+        spec:BuildClusterJewelGraphs()
         itemsTab:UpdateSockets()
         build.buildFlag = true
         M.get_main_output()
+        io.stderr:write(string.format("[calc_with_cluster_chain] Rebuilt cluster graphs after equipping %d mediums\n", equippedMediums))
       end
     end
 
@@ -1859,6 +1834,7 @@ function M.calc_with_cluster_chain(params)
       afterOutput = afterOutput,
       allocatedNotables = allocatedNotableIds,
       totalPointCost = totalPointCost,
+      nestedSocketsUsed = equippedMediums,
     }
   end)
 

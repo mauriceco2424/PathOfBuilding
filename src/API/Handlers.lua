@@ -286,6 +286,7 @@ handlers.calc_with_cluster_chain = function(params)
     afterOutput = result.afterOutput,
     allocatedNotables = result.allocatedNotables,
     totalPointCost = result.totalPointCost,
+    nestedSocketsUsed = result.nestedSocketsUsed,
   }
 end
 
