@@ -106,6 +106,26 @@ local function deepCopySafe(tbl, seen)
   return out
 end
 
+-- Fix cluster jewel validity for items parsed from text.
+-- PoB's parseMod uses concatenated enchant text as lookup key (e.g., "claw...dagger..." for
+-- skills with 2 enchant lines). Individual enchant lines from item text can't match, so
+-- jewelData.clusterJewelSkill stays nil. The item-level field (set by "Cluster Jewel Skill:"
+-- metadata header) is correct; copy it to jewelData and recompute clusterJewelValid.
+function M._fixClusterJewelValid(item)
+  if not item or not item.jewelData or not item.clusterJewel then return end
+  if not item.jewelData.clusterJewelSkill and item.clusterJewelSkill then
+    item.jewelData.clusterJewelSkill = item.clusterJewelSkill
+  end
+  if not item.jewelData.clusterJewelNodeCount and item.clusterJewelNodeCount then
+    item.jewelData.clusterJewelNodeCount = item.clusterJewelNodeCount
+  end
+  -- Recompute valid flag (mirrors Item.lua line 1660-1662)
+  item.jewelData.clusterJewelValid = item.jewelData.clusterJewelKeystone
+    or ((item.jewelData.clusterJewelSkill or item.jewelData.clusterJewelSmallsAreNothingness)
+        and item.jewelData.clusterJewelNodeCount)
+    or (item.jewelData.clusterJewelSocketCountOverride and item.jewelData.clusterJewelNothingnessCount)
+end
+
 -- Export full calculation snapshot (all PoB calculation outputs)
 -- This provides access to all internal PoB calculations including EHP, per-skill DPS, etc.
 function M.get_full_calcs()
@@ -1195,13 +1215,7 @@ function M.calc_with_jewel(params)
       itemsTab:PopulateSlots()
     end)
 
-    -- b. Rebuild to destroy cluster subgraph created by the test jewel
-    pcall(function()
-      build.buildFlag = true
-      M.get_main_output()
-    end)
-
-    -- c. Restore allocNodes: remove added keys, re-add removed keys
+    -- b. Restore allocNodes: remove added keys, re-add removed keys
     for k, _ in pairs(spec.allocNodes) do
       if not savedAllocNodeKeys[k] then
         spec.allocNodes[k] = nil
@@ -1216,19 +1230,27 @@ function M.calc_with_jewel(params)
       end
     end
 
-    -- d. Restore allocExtendedNodes (array)
+    -- c. Restore allocExtendedNodes (array)
     wipeTable(spec.allocExtendedNodes)
     for i, v in ipairs(savedAllocExtended) do spec.allocExtendedNodes[i] = v end
 
-    -- e. Restore allocSubgraphNodes (array)
+    -- d. Restore allocSubgraphNodes.
+    -- NOTE: allocSubgraphNodes is a TEMPORARY buffer consumed by BuildClusterJewelGraphs.
+    -- It's typically empty after a build load. Instead of restoring the (likely empty) saved
+    -- version, we reconstruct it from savedAllocNodeKeys: any saved allocated node with
+    -- id >= 0x10000 (cluster subgraph) must be re-allocated after BuildClusterJewelGraphs.
     wipeTable(spec.allocSubgraphNodes)
-    for i, v in ipairs(savedAllocSubgraph) do spec.allocSubgraphNodes[i] = v end
+    for k, _ in pairs(savedAllocNodeKeys) do
+      if k >= 0x10000 then
+        t_insert(spec.allocSubgraphNodes, k)
+      end
+    end
 
-    -- f. Restore jewels map
+    -- e. Restore jewels map
     wipeTable(spec.jewels)
     for k, v in pairs(savedJewels) do spec.jewels[k] = v end
 
-    -- g. Delete test item from items list AND itemOrderList
+    -- f. Delete test item from items list AND itemOrderList
     --    (matches DeleteItem pattern in ItemsTab.lua:1554-1558)
     --    Without the itemOrderList cleanup, exportBuildXml() crashes on
     --    Classes/ItemsTab.lua:1121 when iterating orphaned nil entries.
@@ -1242,9 +1264,23 @@ function M.calc_with_jewel(params)
       itemsTab.items[createdItemId] = nil
     end
 
-    -- h. Rebuild paths and output to restore fully
+    -- g. Fix clusterJewelValid on ALL existing cluster jewels before rebuilding.
+    -- BuildClusterJewelGraphs() during the test may have called BuildModList on
+    -- existing items, resetting their jewelData. Re-fix before rebuilding subgraphs.
+    -- Then rebuild with BuildClusterJewelGraphs (NOT just BuildAllDependsAndPaths)
+    -- to properly destroy test subgraphs and recreate original ones.
     pcall(function()
-      spec:BuildAllDependsAndPaths()
+      for nid, itemId in pairs(spec.jewels) do
+        if itemId and itemId ~= 0 then
+          local item = itemsTab.items[itemId]
+          if item and item.clusterJewel then
+            M._fixClusterJewelValid(item)
+          end
+        end
+      end
+      spec:BuildClusterJewelGraphs()
+      itemsTab:UpdateSockets()
+      itemsTab:PopulateSlots()
       build.buildFlag = true
       M.get_main_output()
     end)
@@ -1300,11 +1336,22 @@ function M.calc_with_jewel(params)
     itemsTab:AddItem(item, true) -- noAutoEquip = true
     createdItemId = item.id
 
+    -- Fix clusterJewelValid for multi-enchant bases (Claw+Dagger, etc.)
+    -- parseMod can't resolve clusterJewelSkill from concatenated keys, but the
+    -- "Cluster Jewel Skill:" metadata header (injected by TypeScript) sets
+    -- item.clusterJewelSkill. Copy it to jewelData so BuildClusterJewelGraphs works.
+    M._fixClusterJewelValid(item)
+
     -- 4c. Equip jewel to socket
     socketCtrl:SetSelItemId(createdItemId)
     itemsTab:PopulateSlots()
 
-    -- 4d. Trigger build (this runs BuildClusterJewelGraphs for cluster jewels)
+    -- 4d. Trigger build. For cluster jewels, we MUST call BuildClusterJewelGraphs
+    -- explicitly — get_main_output() only does wipeGlobalCache + BuildOutput, which
+    -- does NOT create/rebuild cluster subgraphs.
+    if item.clusterJewel then
+      spec:BuildClusterJewelGraphs()
+    end
     build.buildFlag = true
     M.get_main_output()
 
@@ -1548,9 +1595,17 @@ function M.calc_with_cluster_chain(params)
     wipeTable(spec.allocExtendedNodes)
     for i, v in ipairs(savedAllocExtended) do spec.allocExtendedNodes[i] = v end
 
-    -- f. Restore allocSubgraphNodes
+    -- f. Restore allocSubgraphNodes.
+    -- NOTE: allocSubgraphNodes is a TEMPORARY buffer consumed by BuildClusterJewelGraphs.
+    -- It's typically empty after a build load. Instead of restoring the (likely empty) saved
+    -- version, we reconstruct it from savedAllocNodeKeys: any saved allocated node with
+    -- id >= 0x10000 (cluster subgraph) must be re-allocated after BuildClusterJewelGraphs.
     wipeTable(spec.allocSubgraphNodes)
-    for i, v in ipairs(savedAllocSubgraph) do spec.allocSubgraphNodes[i] = v end
+    for k, _ in pairs(savedAllocNodeKeys) do
+      if k >= 0x10000 then
+        t_insert(spec.allocSubgraphNodes, k)
+      end
+    end
 
     -- g. Restore jewels
     wipeTable(spec.jewels)
@@ -1569,9 +1624,22 @@ function M.calc_with_cluster_chain(params)
       end
     end
 
-    -- i. Rebuild paths and output to fully restore
+    -- i. Fix clusterJewelValid on ALL cluster jewels (not just test items).
+    -- BuildClusterJewelGraphs() + BuildOutput() during the test may have called
+    -- BuildModList on existing items, resetting their jewelData. We must re-fix
+    -- all cluster jewels before rebuilding subgraphs.
     pcall(function()
-      spec:BuildAllDependsAndPaths()
+      for nid, itemId in pairs(spec.jewels) do
+        if itemId and itemId ~= 0 then
+          local item = itemsTab.items[itemId]
+          if item and item.clusterJewel then
+            M._fixClusterJewelValid(item)
+          end
+        end
+      end
+      spec:BuildClusterJewelGraphs()
+      itemsTab:UpdateSockets()
+      itemsTab:PopulateSlots()
       build.buildFlag = true
       M.get_main_output()
     end)
@@ -1641,21 +1709,26 @@ function M.calc_with_cluster_chain(params)
     itemsTab:AddItem(primaryItem, true) -- noAutoEquip
     t_insert(createdItemIds, primaryItem.id)
 
-    outerSocketCtrl:SetSelItemId(primaryItem.id)
-    itemsTab:PopulateSlots()
-
-    -- 4d. Rebuild tree to create cluster subgraph and update node links.
-    -- BuildAllDependsAndPaths runs BuildClusterJewelGraphs which creates the
-    -- subgraph nodes and updates linked[] arrays. get_main_output alone only
-    -- does BuildOutput (calc), not the tree graph rebuild.
-    spec:BuildAllDependsAndPaths()
+    -- 4d. Equip primary jewel and rebuild cluster subgraphs.
+    -- BYPASS: Set spec.jewels directly instead of using SetSelItemId. SetSelItemId
+    -- triggers BuildClusterJewelGraphs internally, which calls BuildModList on items,
+    -- recreating jewelData from scratch. For multi-enchant cluster skills (e.g.,
+    -- "Claw + Dagger"), PoB's parseMod can't match individual enchant lines to the
+    -- concatenated key in clusterJewelSkills, so jewelData.clusterJewelSkill stays nil
+    -- after every BuildModList call. By using the spec.jewels bypass and calling
+    -- BuildClusterJewelGraphs ourselves, we can apply the fix right before the rebuild.
+    --
+    -- CRITICAL: _fixClusterJewelValid MUST run AFTER AddItem (which calls BuildModList,
+    -- recreating jewelData = {}) and BEFORE BuildClusterJewelGraphs (which reads
+    -- jewelData.clusterJewelValid to decide whether to create the subgraph).
+    spec.jewels[outerNodeId] = primaryItem.id
+    outerSocketCtrl.selItemId = primaryItem.id
+    M._fixClusterJewelValid(primaryItem)
+    spec:BuildClusterJewelGraphs()
     itemsTab:UpdateSockets()
+    itemsTab:PopulateSlots()
     build.buildFlag = true
     M.get_main_output()
-
-    -- Snapshot node keys after primary equip (to detect medium subgraph nodes later)
-    local postPrimaryNodeKeys = {}
-    for k, _ in pairs(spec.nodes) do postPrimaryNodeKeys[k] = true end
 
     -- 4e. Equip medium jewels in nested sockets (if we equipped a Large and have mediums)
     local equippedMediums = 0
@@ -1663,19 +1736,28 @@ function M.calc_with_cluster_chain(params)
       -- After equipping a Large cluster, BuildClusterJewelGraphs creates subgraph nodes
       -- including nested jewel sockets. These sockets are in spec.nodes but NOT in
       -- itemsTab.sockets (they're unallocated). We can't use the socket controller
-      -- (SetSelItemId) because UpdateSockets only registers ALLOCATED sockets, and
-      -- BuildAllDependsAndPaths destroys/recreates subgraph nodes, invalidating allocations.
+      -- (SetSelItemId) because UpdateSockets only registers ALLOCATED sockets.
       --
       -- BYPASS: Set spec.jewels[nestedSocketId] = mediumItemId directly. This is PoB's
       -- internal jewel-to-socket mapping. Then call BuildClusterJewelGraphs() which
       -- destroys and recreates ALL subgraphs from spec.jewels. During rebuild, it finds
       -- the Medium jewels in nested sockets and recursively creates their subgraphs.
 
-      -- Find new Socket nodes created by the Large cluster's subgraph
+      -- Find nested Socket nodes from the outer socket's subgraph structure directly.
+      -- NOTE: We do NOT use savedNodeKeys comparison because BuildClusterJewelGraphs
+      -- destroys and recreates ALL subgraphs. On replacement (socket already had a
+      -- cluster), the recreated nodes reuse the same proxy IDs, making them invisible
+      -- to a savedNodeKeys diff. Instead, we traverse spec.subGraphs to find the
+      -- subgraph whose parentSocket matches our outer socket, then extract its Socket nodes.
       local nestedSocketIds = {}
-      for k, node in pairs(spec.nodes) do
-        if not savedNodeKeys[k] and node.type == "Socket" and node.expansionJewel then
-          t_insert(nestedSocketIds, k)
+      for _, subGraph in pairs(spec.subGraphs) do
+        if subGraph.parentSocket and subGraph.parentSocket.id == outerNodeId then
+          for _, node in ipairs(subGraph.nodes) do
+            if node.type == "Socket" and node.expansionJewel then
+              t_insert(nestedSocketIds, node.id)
+            end
+          end
+          break
         end
       end
       table.sort(nestedSocketIds)
@@ -1696,6 +1778,7 @@ function M.calc_with_cluster_chain(params)
           if mediumItem and mediumItem.baseName and mediumItem.type == 'Jewel' then
             mediumItem:NormaliseQuality()
             itemsTab:AddItem(mediumItem, true) -- noAutoEquip
+            M._fixClusterJewelValid(mediumItem) -- MUST be after AddItem (which calls BuildModList)
             t_insert(createdItemIds, mediumItem.id)
 
             -- Direct jewel mapping bypass — spec.jewels is what BuildClusterJewelGraphs reads
