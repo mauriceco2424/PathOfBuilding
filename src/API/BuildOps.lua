@@ -2644,7 +2644,7 @@ function M.get_items()
           table.insert(entry.implicitMods, mod)
         else
           -- Debug: Log skipped mods for unique items
-          if it.rarity == "UNIQUE" then
+          if it.rarity == "UNIQUE" or it.rarity == "RELIC" then
             print("[BuildOps] Skipped implicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
           end
         end
@@ -2659,7 +2659,7 @@ function M.get_items()
           table.insert(entry.explicitMods, mod)
         else
           -- Debug: Log skipped mods for unique items
-          if it.rarity == "UNIQUE" then
+          if it.rarity == "UNIQUE" or it.rarity == "RELIC" then
             print("[BuildOps] Skipped explicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
           end
         end
