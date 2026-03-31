@@ -656,8 +656,18 @@ function calcs.initEnv(build, mode, override, specEnv)
 			for nodeId, effectId in pairs(override.masteryOverrides) do
 				local nid = tonumber(nodeId)
 				local node = nid and env.allocNodes[nid]
+				if not node then
+					io.stderr:write(string.format("[REVIEW-DIAG] masteryOverride: node %s NOT in allocNodes\n", tostring(nodeId)))
+				elseif node.type ~= "Mastery" then
+					io.stderr:write(string.format("[REVIEW-DIAG] masteryOverride: node %s type=%s (expected Mastery)\n", tostring(nodeId), tostring(node.type)))
+				end
 				if node and node.type == "Mastery" then
 					local effect = env.spec.tree.masteryEffects[effectId]
+					if not effect then
+						io.stderr:write(string.format("[REVIEW-DIAG] masteryOverride: effect %s NOT found in masteryEffects\n", tostring(effectId)))
+					elseif not effect.sd then
+						io.stderr:write(string.format("[REVIEW-DIAG] masteryOverride: effect %s has no sd\n", tostring(effectId)))
+					end
 					if effect and effect.sd then
 						-- Shallow-copy direct fields and preserve the metatable so inherited
 						-- fields (id, type, skill, etc.) remain accessible via __index.
