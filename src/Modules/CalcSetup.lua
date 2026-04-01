@@ -657,7 +657,30 @@ function calcs.initEnv(build, mode, override, specEnv)
 				local nid = tonumber(nodeId)
 				local node = nid and env.allocNodes[nid]
 				if not node then
-					io.stderr:write(string.format("[REVIEW-DIAG] masteryOverride: node %s NOT in allocNodes\n", tostring(nodeId)))
+					-- Auto-allocate mastery nodes that aren't yet in allocNodes.
+					-- This happens when addNodes includes notables on a wheel but the
+					-- mastery node itself wasn't explicitly added — the agent specifies
+					-- the mastery via masteryOverrides, not addNodes.
+					local specNode = nid and env.spec.nodes[nid]
+					if specNode and specNode.type == "Mastery" then
+						env.allocNodes[nid] = specNode
+						node = specNode
+						-- Update mastery allocation counts for correct multiplier tracking
+						allocatedMasteryCount = allocatedMasteryCount + 1
+						if not allocatedMasteryTypes[specNode.name] then
+							allocatedMasteryTypes[specNode.name] = 1
+							allocatedMasteryTypeCount = allocatedMasteryTypeCount + 1
+						else
+							local prevCount = allocatedMasteryTypes[specNode.name]
+							allocatedMasteryTypes[specNode.name] = prevCount + 1
+							if prevCount == 0 then
+								allocatedMasteryTypeCount = allocatedMasteryTypeCount + 1
+							end
+						end
+						io.stderr:write(string.format("[calc_with] masteryOverride: auto-allocated mastery node %s into allocNodes\n", tostring(nodeId)))
+					else
+						io.stderr:write(string.format("[REVIEW-DIAG] masteryOverride: node %s NOT in allocNodes or spec.nodes\n", tostring(nodeId)))
+					end
 				elseif node.type ~= "Mastery" then
 					io.stderr:write(string.format("[REVIEW-DIAG] masteryOverride: node %s type=%s (expected Mastery)\n", tostring(nodeId), tostring(node.type)))
 				end
