@@ -2166,6 +2166,13 @@ function M.set_config(params)
   if params.multiplierCorrosionStackCount ~= nil then setNumericVar('multiplierCorrosionStackCount', params.multiplierCorrosionStackCount) end
   if params.multiplierManaBurnStacks ~= nil then setNumericVar('multiplierManaBurnStacks', params.multiplierManaBurnStacks) end
 
+  -- Support gem configs (gems that need config to show real DPS)
+  if params.configResonanceCount ~= nil then setNumericVar('configResonanceCount', params.configResonanceCount) end
+  if params.configUnholyResonanceCount ~= nil then setNumericVar('configUnholyResonanceCount', params.configUnholyResonanceCount) end
+  if params.infusedChannellingInfusion ~= nil then input.infusedChannellingInfusion = params.infusedChannellingInfusion; changed = true end
+  if params.intensifyIntensity ~= nil then setNumericVar('intensifyIntensity', params.intensifyIntensity) end
+  if params.sigilOfPowerStages ~= nil then setNumericVar('sigilOfPowerStages', params.sigilOfPowerStages) end
+
   -- Custom modifiers
   if params.customMods ~= nil then input.customMods = tostring(params.customMods); changed = true end
 
