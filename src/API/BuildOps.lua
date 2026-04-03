@@ -2739,6 +2739,31 @@ function M.get_items()
       }
     end
 
+    -- Weapon stats (physical/elemental/chaos damage, crit, APS, DPS)
+    if it.weaponData then
+      -- Determine slotNum from slot name: "Weapon 2"/"Weapon 2 Swap" → 2, else 1
+      local slotNum = (slotName and slotName:match("Weapon 2")) and 2 or 1
+      local wd = it.weaponData[slotNum]
+      if wd then
+        entry.weaponData = {
+          physicalMin = wd.PhysicalMin,
+          physicalMax = wd.PhysicalMax,
+          physicalDPS = wd.PhysicalDPS,
+          elementalDPS = wd.ElementalDPS,
+          chaosDPS = wd.ChaosDPS,
+          totalDPS = wd.TotalDPS,
+          critChance = wd.CritChance,
+          attackRate = wd.AttackRate,
+          range = wd.range,
+          -- Elemental breakdown
+          fireMin = wd.FireMin, fireMax = wd.FireMax,
+          coldMin = wd.ColdMin, coldMax = wd.ColdMax,
+          lightningMin = wd.LightningMin, lightningMax = wd.LightningMax,
+          chaosMin = wd.ChaosMin, chaosMax = wd.ChaosMax,
+        }
+      end
+    end
+
     -- Flask recovery stats (life, mana, duration, charges)
     if it.flaskData then
       entry.flaskData = {
