@@ -277,6 +277,12 @@ function M.get_full_calcs()
         "ImpaleDPS", "HitDPS", "AverageDamage", "Speed", "CritChance",
         "CritMultiplier", "EffectiveCritChance", "PoisonChance", "PoisonDamage",
         "TotalDot", "MirageDPS", "CullingDPS",
+        -- Skill-specific stats that build-context.ts reads from mainOutput
+        "Accuracy", "HitChance", "PreEffectiveCritChance",
+        "AverageHit", "AverageBurstDamage", "AverageBurstHits",
+        "PhysicalHitAverage", "FireHitAverage", "ColdHitAverage",
+        "LightningHitAverage", "ChaosHitAverage",
+        "FirePenetration", "ColdPenetration", "LightningPenetration", "ChaosPenetration",
       }
       for _, field in ipairs(dpsFields) do
         if bestSkillOut[field] ~= nil then
