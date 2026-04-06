@@ -5,6 +5,30 @@
 --
 local t_concat = table.concat
 
+local function loadSplitZipParts(basePath)
+	local parts = { }
+	local foundAny = false
+
+	for part = 0, 99 do
+		local file = io.open(basePath .. ".part" .. part, "rb")
+		if not file then
+			if foundAny then
+				break
+			end
+		else
+			foundAny = true
+			parts[#parts + 1] = file:read("*a")
+			file:close()
+		end
+	end
+
+	if not foundAny then
+		return ""
+	end
+
+	return t_concat(parts, "")
+end
+
 -- Load legion jewel data
 local function loadJewelFile(jewelTypeName)
 	jewelTypeName = "/Data/TimelessJewelData/" .. jewelTypeName
@@ -26,22 +50,10 @@ local function loadJewelFile(jewelTypeName)
 		compressedFileAttr.modified = fileHandle:GetFileModifiedTime()
 	end
 
-	fileHandle = NewFileSearch(scriptPath .. jewelTypeName .. ".zip.part*")
-	local splitFile = { }
-	if fileHandle then
-		compressedFileAttr.modified = fileHandle:GetFileModifiedTime()
+	local splitFile = loadSplitZipParts(scriptPath .. jewelTypeName .. ".zip")
+	if splitFile ~= "" and not compressedFileAttr.modified then
+		compressedFileAttr.modified = os.time()
 	end
-	while fileHandle do
-		local fileName = fileHandle:GetFileName()
-		local file = io.open(scriptPath .. "/Data/TimelessJewelData/" .. fileName, "rb")
-		local part = tonumber(fileName:match("%.part(%d)")) or 0
-		splitFile[part + 1] = file:read("*a")
-		file:close()
-		if not fileHandle:NextFile() then
-			break
-		end
-	end
-	splitFile = t_concat(splitFile, "")
 
 	if uncompressedFileAttr.modified and uncompressedFileAttr.modified > (compressedFileAttr.modified or 0) then
 		ConPrintf("Uncompressed jewel data is up-to-date, loading " .. uncompressedFileAttr.fileName)
@@ -89,7 +101,16 @@ local function loadTimelessJewel(jewelType, nodeID)
 		return
 	end
 	-- if LUT is already loaded, and this either isn't GV, or GV has already emptied it's raw data out, return
-	if data.timelessJewelLUTs[jewelType] and data.timelessJewelLUTs[jewelType].data and (jewelType ~= 1 or data.timelessJewelLUTs[jewelType].data[nodeIndex + 1].raw == nil) then
+	if data.timelessJewelLUTs[jewelType]
+		and data.timelessJewelLUTs[jewelType].data
+		and (
+			jewelType ~= 1
+			or (
+				data.timelessJewelLUTs[jewelType].data[nodeIndex + 1]
+				and data.timelessJewelLUTs[jewelType].data[nodeIndex + 1].raw == nil
+			)
+		)
+	then
 		return
 	end
 
@@ -158,6 +179,14 @@ local function loadTimelessJewel(jewelType, nodeID)
 	end
 end
 
+local function convertLocalIdToGlobalId(jewelType, localId)
+	local mappingByJewelType = data.nodeIDList.localIdToGlobalId
+	if mappingByJewelType and mappingByJewelType[jewelType] and mappingByJewelType[jewelType][localId] ~= nil then
+		return mappingByJewelType[jewelType][localId]
+	end
+	return localId
+end
+
 --[[
 -- the generation functions needs to be ported to LUA
 local generateNode(jewelType, seed, nodeID)
@@ -184,7 +213,7 @@ local function repairLUTs()
 	ConPrintf("Error NodeIndexMapping file empty")
 	local nodeIDList = {  }
 	GetScriptPath()
-	for _, jewelType in ipairs({2, 3, 4, 5}) do
+	for _, jewelType in ipairs({2, 3, 4, 5, 6}) do
 		loadTimelessJewel(jewelType, 1)
 		local jewelTypeName = data.timelessJewelTypes[jewelType]:gsub("%s+", "")
 		local jewelData = loadJewelFile(jewelTypeName)
@@ -299,13 +328,22 @@ local function readLUT(seed, nodeID, jewelType)
 		-- "Glorious Vanity"
 		if jewelType == 1 then
 			local result = { }
-
-			for i = 1, data.timelessJewelLUTs[jewelType].sizes:byte(index * seedSize + seedOffset + 1) do
+			local dataLength = data.timelessJewelLUTs[jewelType].sizes:byte(index * seedSize + seedOffset + 1)
+			for i = 1, dataLength do
 				result[i] = data.timelessJewelLUTs[jewelType].data[index + 1][seedOffset + 1]:byte(i)
+			end
+			-- replacement id in first byte, or addition ids in first half for legacy/might variants
+			if dataLength == 2 or dataLength == 3 then
+				result[1] = convertLocalIdToGlobalId(jewelType, result[1])
+			elseif dataLength == 6 or dataLength == 8 then
+				for i = 1, (dataLength / 2) do
+					result[i] = convertLocalIdToGlobalId(jewelType, result[i])
+				end
 			end
 			return result
 		elseif index <= data.nodeIDList["sizeNotable"] then
-			return { data.timelessJewelLUTs[jewelType].data:byte(index * seedSize + seedOffset + 1) }
+			local localId = data.timelessJewelLUTs[jewelType].data:byte(index * seedSize + seedOffset + 1)
+			return { convertLocalIdToGlobalId(jewelType, localId) }
 		end
 	else
 		ConPrintf("ERROR: Missing Index lookup for nodeID: "..nodeID)

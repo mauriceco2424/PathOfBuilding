@@ -3,7 +3,7 @@
 -- It can be run using a standard lua interpreter, although LuaJIT is preferable
 
 -- Load LibDeflate for compression/decompression support
-local scriptDir = arg[0]:match("(.*/)")  or "./"
+local scriptDir = arg[0]:match("(.*[/\\])")  or "./"
 local LibDeflate = dofile(scriptDir .. "LibDeflate.lua")
 
 -- Callbacks
@@ -327,8 +327,11 @@ if os.getenv('POB_API_STDIO') == '1' or has_flag('--stdio') then
     mainObject.main:SetMode("BUILD", false, "")
     runCallback("OnFrame")
     local build = mainObject.main.modes["BUILD"]
+    _G.build = build
     local charData = build.importTab:ImportItemsAndSkills(getItemsJSON)
     build.importTab:ImportPassiveTreeAndJewels(getPassiveSkillsJSON, charData)
+    runCallback("OnFrame")
+    runCallback("OnFrame")
   end
   _G.newBuild = newBuild
   _G.loadBuildFromXML = loadBuildFromXML
@@ -387,8 +390,11 @@ end
 function loadBuildFromJSON(getItemsJSON, getPassiveSkillsJSON)
 	mainObject.main:SetMode("BUILD", false, "")
 	runCallback("OnFrame")
+	build = mainObject.main.modes["BUILD"]
 	local charData = build.importTab:ImportItemsAndSkills(getItemsJSON)
 	build.importTab:ImportPassiveTreeAndJewels(getPassiveSkillsJSON, charData)
+	runCallback("OnFrame")
+	runCallback("OnFrame")
 	-- You now have a build without a correct main skill selected, or any configuration options set
 	-- Good luck!
 end

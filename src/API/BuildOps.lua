@@ -16,13 +16,15 @@ function M.get_main_output()
   if not build or not build.calcsTab then
     return nil, "build not initialized"
   end
-  -- Mirror Build:OnFrame() behavior: wipe GlobalCache when buildFlag is set
-  -- Without this, BuildOutput() reuses stale cached skill calculations
-  -- (e.g. calc_with_jewel would see identical before/after outputs)
-  if build.buildFlag then
-    wipeGlobalCache()
-    build.buildFlag = false
-  end
+  -- ALWAYS wipe GlobalCache before BuildOutput() to ensure idempotent results.
+  -- Previously only wiped when buildFlag was set, but this caused stale cache
+  -- reads when multiple API calls happened in sequence (e.g. set_config calls
+  -- get_main_output which populates cache, then getFullCalcs calls BuildOutput
+  -- again WITHOUT wiping — reading stale entries from the first pass).
+  -- Toggling a config key off then back on would produce different DPS because
+  -- each BuildOutput() pass read/wrote different cache entries.
+  wipeGlobalCache()
+  build.buildFlag = false
   if build.calcsTab.BuildOutput then
     build.calcsTab:BuildOutput()
   end
@@ -43,6 +45,7 @@ function M.export_stats(fields)
   local wanted = fields or {
     "Life", "EnergyShield", "Armour", "Evasion",
     "FireResist", "ColdResist", "LightningResist", "ChaosResist",
+    "FireResistOverCap", "ColdResistOverCap", "LightningResistOverCap", "ChaosResistOverCap",
     "BlockChance", "SpellBlockChance",
     "LifeRegen", "Mana", "ManaRegen",
     "Ward", "DodgeChance", "SpellDodgeChance",
@@ -103,12 +106,37 @@ local function deepCopySafe(tbl, seen)
   return out
 end
 
+-- Fix cluster jewel validity for items parsed from text.
+-- PoB's parseMod uses concatenated enchant text as lookup key (e.g., "claw...dagger..." for
+-- skills with 2 enchant lines). Individual enchant lines from item text can't match, so
+-- jewelData.clusterJewelSkill stays nil. The item-level field (set by "Cluster Jewel Skill:"
+-- metadata header) is correct; copy it to jewelData and recompute clusterJewelValid.
+function M._fixClusterJewelValid(item)
+  if not item or not item.jewelData or not item.clusterJewel then return end
+  if not item.jewelData.clusterJewelSkill and item.clusterJewelSkill then
+    item.jewelData.clusterJewelSkill = item.clusterJewelSkill
+  end
+  if not item.jewelData.clusterJewelNodeCount and item.clusterJewelNodeCount then
+    item.jewelData.clusterJewelNodeCount = item.clusterJewelNodeCount
+  end
+  -- Recompute valid flag (mirrors Item.lua line 1660-1662)
+  item.jewelData.clusterJewelValid = item.jewelData.clusterJewelKeystone
+    or ((item.jewelData.clusterJewelSkill or item.jewelData.clusterJewelSmallsAreNothingness)
+        and item.jewelData.clusterJewelNodeCount)
+    or (item.jewelData.clusterJewelSocketCountOverride and item.jewelData.clusterJewelNothingnessCount)
+end
+
 -- Export full calculation snapshot (all PoB calculation outputs)
 -- This provides access to all internal PoB calculations including EHP, per-skill DPS, etc.
 function M.get_full_calcs()
   if not build or not build.calcsTab then
     return nil, 'build not initialized'
   end
+
+  -- ALWAYS wipe GlobalCache before BuildOutput() for idempotent results.
+  -- See get_main_output() comment for full rationale.
+  wipeGlobalCache()
+  build.buildFlag = false
 
   -- Ensure calculations are up to date
   if build.calcsTab.BuildOutput then
@@ -156,7 +184,6 @@ function M.get_full_calcs()
   end
 
   local skillOutput = calcsTab.skillOutput or {}
-  local mainOutputCopy = deepCopySafe(mainOutput)
   local breakdown = calcsTab.breakdown or {}
 
   -- Extract config and skills context
@@ -166,21 +193,121 @@ function M.get_full_calcs()
   local configInput = configTab and configTab.input or {}
   local socketGroups = skillsTab and skillsTab.socketGroupList or {}
 
-  -- Identify active skill
+  -- Identify active skill from the calculation environment (not build.activeSkill which is GUI-only)
   local activeSkillName = nil
-  if build.activeSkill and build.activeSkill.activeEffect and build.activeSkill.activeEffect.grantedEffect then
+  if mainEnv and mainEnv.player and mainEnv.player.mainSkill then
+    local ms = mainEnv.player.mainSkill
+    if ms.activeEffect and ms.activeEffect.grantedEffect then
+      activeSkillName = ms.activeEffect.grantedEffect.name
+    end
+  end
+  -- Fallback to build.activeSkill (GUI context)
+  if not activeSkillName and build.activeSkill and build.activeSkill.activeEffect and build.activeSkill.activeEffect.grantedEffect then
     activeSkillName = build.activeSkill.activeEffect.grantedEffect.name
   end
 
+  -- When FullDPS is 0 (no skills marked includeInFullDPS), compute it from per-skill outputs.
+  -- Also build a per-skill DPS breakdown for all enabled socket groups.
+  local perSkillDPS = {}
+  if mainEnv and mainEnv.player and mainEnv.player.activeSkillList then
+    for _, activeSkill in ipairs(mainEnv.player.activeSkillList) do
+      if activeSkill.socketGroup and activeSkill.socketGroup.enabled then
+        local skillName = nil
+        if activeSkill.activeEffect and activeSkill.activeEffect.grantedEffect then
+          skillName = activeSkill.activeEffect.grantedEffect.name
+        end
+        if skillName then
+          -- Check if this skill's output is cached in GlobalCache (computed during BuildOutput MAIN pass)
+          local uuid = cacheSkillUUID and cacheSkillUUID(activeSkill, mainEnv) or nil
+          local skillOut = nil
+          if uuid and GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["MAIN"] and GlobalCache.cachedData["MAIN"][uuid] then
+            local cached = GlobalCache.cachedData["MAIN"][uuid]
+            skillOut = cached.Env and cached.Env.player and cached.Env.player.output
+          end
+          if skillOut then
+            t_insert(perSkillDPS, {
+              name = skillName,
+              CombinedDPS = skillOut.CombinedDPS or 0,
+              TotalDPS = skillOut.TotalDPS or 0,
+              TotalDotDPS = skillOut.TotalDotDPS or 0,
+              TotalPoisonDPS = skillOut.TotalPoisonDPS or 0,
+              PoisonDPS = skillOut.PoisonDPS,
+              WithPoisonDPS = skillOut.WithPoisonDPS or 0,
+              BleedDPS = skillOut.BleedDPS or 0,
+              IgniteDPS = skillOut.IgniteDPS or 0,
+              includeInFullDPS = activeSkill.socketGroup.includeInFullDPS or false,
+            })
+          end
+        end
+      end
+    end
+  end
+
+  -- If FullDPS is 0 (no includeInFullDPS flags set), find the best DPS skill and use its
+  -- CombinedDPS as FullDPS. Also overlay its DPS fields onto mainOutput so the caller
+  -- gets the correct damage numbers even when mainSocketGroup points to a non-DPS skill.
+  if not mainOutput.FullDPS or mainOutput.FullDPS == 0 then
+    local bestDPS = 0
+    local bestSkillOut = nil
+    local bestSkillName = nil
+    -- Find highest CombinedDPS from cached per-skill outputs
+    if mainEnv and mainEnv.player and mainEnv.player.activeSkillList then
+      for _, activeSkill in ipairs(mainEnv.player.activeSkillList) do
+        if activeSkill.socketGroup and activeSkill.socketGroup.enabled
+          and activeSkill.activeEffect and activeSkill.activeEffect.grantedEffect
+          and not activeSkill.activeEffect.grantedEffect.support then
+          local uuid = cacheSkillUUID and cacheSkillUUID(activeSkill, mainEnv) or nil
+          if uuid and GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["MAIN"] and GlobalCache.cachedData["MAIN"][uuid] then
+            local cached = GlobalCache.cachedData["MAIN"][uuid]
+            local so = cached.Env and cached.Env.player and cached.Env.player.output
+            if so and (so.CombinedDPS or 0) > bestDPS then
+              bestDPS = so.CombinedDPS
+              bestSkillOut = so
+              bestSkillName = activeSkill.activeEffect.grantedEffect.name
+            end
+          end
+        end
+      end
+    end
+    if bestSkillOut and bestDPS > (mainOutput.CombinedDPS or 0) then
+      -- Overlay the best skill's DPS fields onto mainOutput so callers get correct values
+      local dpsFields = {
+        "CombinedDPS", "TotalDPS", "TotalDotDPS", "TotalPoisonDPS", "PoisonDPS",
+        "WithPoisonDPS", "BleedDPS", "IgniteDPS", "TotalIgniteDPS", "DecayDPS",
+        "ImpaleDPS", "HitDPS", "AverageDamage", "Speed", "CritChance",
+        "CritMultiplier", "EffectiveCritChance", "PoisonChance", "PoisonDamage",
+        "TotalDot", "MirageDPS", "CullingDPS",
+        -- Skill-specific stats that build-context.ts reads from mainOutput
+        "Accuracy", "HitChance", "PreEffectiveCritChance",
+        "AverageHit", "AverageBurstDamage", "AverageBurstHits",
+        "PhysicalHitAverage", "FireHitAverage", "ColdHitAverage",
+        "LightningHitAverage", "ChaosHitAverage",
+        "FirePenetration", "ColdPenetration", "LightningPenetration", "ChaosPenetration",
+      }
+      for _, field in ipairs(dpsFields) do
+        if bestSkillOut[field] ~= nil then
+          mainOutput[field] = bestSkillOut[field]
+        end
+      end
+      mainOutput.FullDPS = bestDPS
+      activeSkillName = bestSkillName
+    elseif mainOutput.CombinedDPS and mainOutput.CombinedDPS > 0 then
+      mainOutput.FullDPS = mainOutput.CombinedDPS
+    end
+  end
+
   -- Deep copy all outputs to JSON-serializable format
+  local mainOutputCopied = deepCopySafe(mainOutput)
+
   local result = {
-    mainOutput = deepCopySafe(mainOutput),
+    mainOutput = mainOutputCopied,
     output = deepCopySafe(output),
     skillOutput = deepCopySafe(skillOutput),
     breakdown = deepCopySafe(breakdown),
     config = deepCopySafe(configInput),
     skills = M.get_skills(),
     activeSkill = activeSkillName,
+    perSkillDPS = perSkillDPS,
   }
 
   return result
@@ -199,14 +326,38 @@ function M.get_tree()
     secondaryAscendClassId = tonumber(spec.curSecondaryAscendClassId or 0) or 0,
     nodes = {},
     masteryEffects = {},
+    nodeOverrides = {},
   }
-  for id, _ in pairs(spec.allocNodes or {}) do
+  for id, node in pairs(spec.allocNodes or {}) do
     table.insert(out.nodes, id)
+    if node then
+      local name = node.dn or node.name
+      local stats = {}
+      if type(node.sd) == "table" then
+        for _, stat in ipairs(node.sd) do
+          if type(stat) == "string" then
+            table.insert(stats, stat)
+          end
+        end
+      end
+      if name then
+        out.nodeOverrides[tostring(id)] = {
+          name = name,
+          stats = stats,
+          icon = node.icon,
+          activeEffectImage = node.activeEffectImage,
+          reminderText = node.reminderText,
+        }
+      end
+    end
   end
   for mastery, effect in pairs(spec.masterySelections or {}) do
     out.masteryEffects[mastery] = effect
   end
   table.sort(out.nodes)
+  if not next(out.nodeOverrides) then
+    out.nodeOverrides = nil
+  end
 
   -- Point budget data: use PoB's built-in CountAllocNodes for accurate counts
   if spec.CountAllocNodes then
@@ -549,26 +700,156 @@ end
 
 -- Calculate what-if scenario without persisting changes
 -- params: { addNodes?: number[], removeNodes?: number[], masteryOverrides?: { [nodeId]: effectId }, conditions?: string[], useFullDPS?: boolean }
--- Returns: { output = {...}, baseOutput = {...} } or nil, error
+-- Returns: { output = {...}, baseOutput = {...}, diagnostics = {...} } or nil, error
 function M.calc_with(params)
   if not build or not build.calcsTab then return nil, 'build not initialized' end
   local calcFunc, baseOut = build.calcsTab:GetMiscCalculator()
+
+  -- Fix: When the cached calculator has 0 DPS (mainSocketGroup points to a
+  -- non-DPS skill like an aura), create a fresh calculator with the correct
+  -- main socket group. This mirrors the "best skill overlay" in get_main_output
+  -- but applies it at the calculator level so both base and override use the
+  -- correct DPS skill.
+  -- NOTE: bestGroupIdx is declared here (outside the if block) because the
+  -- calcFunc closure captures `build` by reference — when calcFunc(override)
+  -- is called later, it reads build.mainSocketGroup again via initEnv().
+  -- We must temporarily set build.mainSocketGroup = bestGroupIdx around that
+  -- call too, not just around getMiscCalculator().
+  local bestGroupIdx = nil
+  local baseCombined = baseOut and baseOut.CombinedDPS or 0
+  local baseFullDPSCheck = baseOut and baseOut.FullDPS or 0
+  local baseTotalDPSCheck = baseOut and baseOut.TotalDPS or 0
+  if baseCombined == 0 and baseFullDPSCheck == 0 and baseTotalDPSCheck == 0 then
+    -- Find the best DPS socket group from GlobalCache MAIN mode data
+    local bestDPS = 0
+    local socketGroupList = build.skillsTab and build.skillsTab.socketGroupList
+    local mainEnv = build.calcsTab and build.calcsTab.mainEnv
+    if socketGroupList and mainEnv and mainEnv.player and mainEnv.player.activeSkillList
+      and GlobalCache and GlobalCache.cachedData and GlobalCache.cachedData["MAIN"] then
+      for idx, group in ipairs(socketGroupList) do
+        if group.enabled then
+          for _, activeSkill in ipairs(mainEnv.player.activeSkillList) do
+            if activeSkill.socketGroup == group
+              and activeSkill.activeEffect and activeSkill.activeEffect.grantedEffect
+              and not activeSkill.activeEffect.grantedEffect.support then
+              local uuid = cacheSkillUUID and cacheSkillUUID(activeSkill, mainEnv) or nil
+              if uuid and GlobalCache.cachedData["MAIN"][uuid] then
+                local cached = GlobalCache.cachedData["MAIN"][uuid]
+                local so = cached.Env and cached.Env.player and cached.Env.player.output
+                if so and (so.CombinedDPS or 0) > bestDPS then
+                  bestDPS = so.CombinedDPS
+                  bestGroupIdx = idx
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    if bestGroupIdx and bestGroupIdx ~= build.mainSocketGroup then
+      io.stderr:write(string.format(
+        "[calc_with] DPS fix: mainSocketGroup %d has 0 DPS, switching to group %d (CombinedDPS=%d)\n",
+        build.mainSocketGroup or 0, bestGroupIdx, bestDPS
+      ))
+      local savedMainSocketGroup = build.mainSocketGroup
+      build.mainSocketGroup = bestGroupIdx
+      local freshCalcResults = nil
+      local ok, errMsg = pcall(function()
+        local calcsModule = build.calcsTab.calcs
+        local f, b = calcsModule.getMiscCalculator(build)
+        freshCalcResults = { calcFunc = f, baseOut = b }
+      end)
+      build.mainSocketGroup = savedMainSocketGroup
+      if ok and freshCalcResults then
+        calcFunc = freshCalcResults.calcFunc
+        baseOut = freshCalcResults.baseOut
+      else
+        io.stderr:write(string.format("[calc_with] DPS fix: failed to create fresh calculator: %s\n", tostring(errMsg)))
+      end
+    end
+  end
+
   local override = {}
+
+  -- Diagnostics: track resolution failures so TypeScript can surface them
+  local diagnostics = {
+    addRequested = 0,
+    addResolved = 0,
+    addUnresolved = {},
+    removeRequested = 0,
+    removeResolved = 0,
+    removeUnresolved = {},
+  }
+
   if params and type(params.addNodes) == 'table' then
     local addNodes = {}
     local hasAddNodes = false
+    diagnostics.addRequested = #params.addNodes
     for _, id in ipairs(params.addNodes) do
-      local n = build.spec and build.spec.nodes and build.spec.nodes[tonumber(id)]
-      if n then addNodes[n] = true; hasAddNodes = true end
+      local nid = tonumber(id)
+      local n = nid and build.spec and build.spec.nodes and build.spec.nodes[nid]
+      if n then
+        addNodes[n] = true
+        hasAddNodes = true
+        diagnostics.addResolved = diagnostics.addResolved + 1
+      else
+        -- Fallback: check allocNodes directly (cluster/subgraph nodes may have
+        -- different object refs after jewel subgraph rebuilds)
+        local allocNode = nid and build.spec and build.spec.allocNodes and build.spec.allocNodes[nid]
+        if allocNode then
+          addNodes[allocNode] = true
+          hasAddNodes = true
+          diagnostics.addResolved = diagnostics.addResolved + 1
+          io.stderr:write(string.format("[calc_with] addNode %s resolved via allocNodes fallback\n", tostring(id)))
+        else
+          table.insert(diagnostics.addUnresolved, id)
+          io.stderr:write(string.format("[calc_with] WARN: addNode %s not found in spec.nodes or allocNodes\n", tostring(id)))
+        end
+      end
     end
     if hasAddNodes then override.addNodes = addNodes end
   end
   if params and type(params.removeNodes) == 'table' then
     local removeNodes = {}
     local hasRemoveNodes = false
+    diagnostics.removeRequested = #params.removeNodes
     for _, id in ipairs(params.removeNodes) do
-      local n = build.spec and build.spec.nodes and build.spec.nodes[tonumber(id)]
-      if n then removeNodes[n] = true; hasRemoveNodes = true end
+      local nid = tonumber(id)
+      local n = nid and build.spec and build.spec.nodes and build.spec.nodes[nid]
+      if n then
+        -- Verify this node is actually allocated (removing unallocated node is a no-op)
+        local isAllocated = build.spec.allocNodes and build.spec.allocNodes[nid]
+        if isAllocated then
+          removeNodes[n] = true
+          hasRemoveNodes = true
+          diagnostics.removeResolved = diagnostics.removeResolved + 1
+        else
+          -- Node exists in spec but isn't allocated — try allocNodes lookup
+          -- (in case allocNodes has a different object ref for this ID)
+          local allocNode = build.spec.allocNodes and build.spec.allocNodes[nid]
+          if allocNode then
+            removeNodes[allocNode] = true
+            hasRemoveNodes = true
+            diagnostics.removeResolved = diagnostics.removeResolved + 1
+            io.stderr:write(string.format("[calc_with] removeNode %s: spec.nodes ref != allocNodes ref, using allocNodes\n", tostring(id)))
+          else
+            table.insert(diagnostics.removeUnresolved, id)
+            io.stderr:write(string.format("[calc_with] WARN: removeNode %s found in spec.nodes but NOT allocated — removal is a no-op\n", tostring(id)))
+          end
+        end
+      else
+        -- Not in spec.nodes at all — try allocNodes directly
+        local allocNode = nid and build.spec and build.spec.allocNodes and build.spec.allocNodes[nid]
+        if allocNode then
+          removeNodes[allocNode] = true
+          hasRemoveNodes = true
+          diagnostics.removeResolved = diagnostics.removeResolved + 1
+          io.stderr:write(string.format("[calc_with] removeNode %s resolved via allocNodes fallback (not in spec.nodes)\n", tostring(id)))
+        else
+          table.insert(diagnostics.removeUnresolved, id)
+          io.stderr:write(string.format("[calc_with] WARN: removeNode %s not found in spec.nodes or allocNodes\n", tostring(id)))
+        end
+      end
     end
     if hasRemoveNodes then override.removeNodes = removeNodes end
   end
@@ -585,12 +866,50 @@ function M.calc_with(params)
   if params and type(params.conditions) == 'table' then
     override.conditions = params.conditions
   end
+
+  -- Log override state for debugging 0% results
+  local hasOverride = override.addNodes or override.removeNodes or override.masteryOverrides or override.conditions
+  if not hasOverride then
+    io.stderr:write(string.format(
+      "[calc_with] WARNING: Override is EMPTY after resolution (add: %d/%d, remove: %d/%d) — will return identical before/after\n",
+      diagnostics.addResolved, diagnostics.addRequested,
+      diagnostics.removeResolved, diagnostics.removeRequested
+    ))
+  end
+
+  -- If the DPS fix found a better group, temporarily switch mainSocketGroup
+  -- so the calcFunc closure (which reads build.mainSocketGroup via initEnv)
+  -- uses the correct DPS skill for the override calculation too.
+  local savedMainSocketGroupForCalc = nil
+  if bestGroupIdx and bestGroupIdx ~= build.mainSocketGroup then
+    savedMainSocketGroupForCalc = build.mainSocketGroup
+    build.mainSocketGroup = bestGroupIdx
+  end
   local out = calcFunc(override, params and params.useFullDPS)
+  if savedMainSocketGroupForCalc then
+    build.mainSocketGroup = savedMainSocketGroupForCalc
+  end
+
+  -- Log key stats for debugging
+  local baseFullDPS = baseOut and baseOut.FullDPS or 0
+  local afterFullDPS = out and out.FullDPS or 0
+  local baseTotalDPS = baseOut and baseOut.TotalDPS or 0
+  local afterTotalDPS = out and out.TotalDPS or 0
+  if diagnostics.addRequested > 0 or diagnostics.removeRequested > 0 then
+    io.stderr:write(string.format(
+      "[calc_with] Stats: FullDPS %d->%d, TotalDPS %d->%d, Life %d->%d, EHP %d->%d\n",
+      baseFullDPS, afterFullDPS,
+      baseTotalDPS, afterTotalDPS,
+      (baseOut and baseOut.Life or 0), (out and out.Life or 0),
+      (baseOut and baseOut.TotalEHP or 0), (out and out.TotalEHP or 0)
+    ))
+  end
 
   -- Use deepCopySafe to strip circular references and non-serializable values
   return {
     output = deepCopySafe(out),
     baseOutput = deepCopySafe(baseOut),
+    diagnostics = diagnostics,
   }
 end
 
@@ -638,7 +957,17 @@ function M.calc_with_gems(params)
     end
   end
 
-  -- 2. Apply gem modifications to LIVE state
+  -- 2. Capture baseline output BEFORE applying any modifications.
+  -- GetMiscCalculator creates a calculator from current (unmodified) build state.
+  -- Must happen here — before gem mutations — so baseOut reflects the original build.
+  local baseCalcFunc, baseOut = build.calcsTab:GetMiscCalculator()
+  local condOverride = {}
+  if params and type(params.conditions) == 'table' then
+    condOverride.conditions = params.conditions
+  end
+  baseOut = baseCalcFunc(condOverride, params and params.useFullDPS)
+
+  -- 3. Apply gem modifications to LIVE state
   local modified = false
 
   -- Handle removeGems (do first to handle indices correctly)
@@ -661,9 +990,20 @@ function M.calc_with_gems(params)
 
     local searchTerm = tostring(identifier)
 
+    -- Build alternate search terms: with/without " Support" suffix
+    -- PoB gem database uses names WITHOUT "Support" (e.g., "Deadly Ailments")
+    -- but RepOE/gems.json uses WITH "Support" (e.g., "Deadly Ailments Support")
+    local altSearchTerm = nil
+    if searchTerm:sub(-8) == " Support" then
+      altSearchTerm = searchTerm:sub(1, -9)  -- strip " Support"
+    else
+      altSearchTerm = searchTerm .. " Support"  -- add " Support"
+    end
+
     for _, gemData in pairs(build.data.gems) do
-      -- Try name match first (display name)
-      if gemData.name == searchTerm or gemData.nameSpec == searchTerm then
+      -- Try name match first (display name), including alternate suffix form
+      if gemData.name == searchTerm or gemData.nameSpec == searchTerm
+         or gemData.name == altSearchTerm or gemData.nameSpec == altSearchTerm then
         return gemData
       end
       -- Try skillId match (grantedEffect.id like "SupportBurningDamage")
@@ -739,15 +1079,6 @@ function M.calc_with_gems(params)
       end
     end
   end
-
-  -- 3. Capture baseline output BEFORE applying modifications
-  -- GetMiscCalculator creates a snapshot from current (unmodified) build state
-  local baseCalcFunc, baseOut = build.calcsTab:GetMiscCalculator()
-  local condOverride = {}
-  if params and type(params.conditions) == 'table' then
-    condOverride.conditions = params.conditions
-  end
-  baseOut = baseCalcFunc(condOverride, params and params.useFullDPS)
 
   -- 4. Reprocess socket groups if modified and get new output
   local out
@@ -890,13 +1221,7 @@ function M.calc_with_jewel(params)
       itemsTab:PopulateSlots()
     end)
 
-    -- b. Rebuild to destroy cluster subgraph created by the test jewel
-    pcall(function()
-      build.buildFlag = true
-      M.get_main_output()
-    end)
-
-    -- c. Restore allocNodes: remove added keys, re-add removed keys
+    -- b. Restore allocNodes: remove added keys, re-add removed keys
     for k, _ in pairs(spec.allocNodes) do
       if not savedAllocNodeKeys[k] then
         spec.allocNodes[k] = nil
@@ -911,26 +1236,57 @@ function M.calc_with_jewel(params)
       end
     end
 
-    -- d. Restore allocExtendedNodes (array)
+    -- c. Restore allocExtendedNodes (array)
     wipeTable(spec.allocExtendedNodes)
     for i, v in ipairs(savedAllocExtended) do spec.allocExtendedNodes[i] = v end
 
-    -- e. Restore allocSubgraphNodes (array)
+    -- d. Restore allocSubgraphNodes.
+    -- NOTE: allocSubgraphNodes is a TEMPORARY buffer consumed by BuildClusterJewelGraphs.
+    -- It's typically empty after a build load. Instead of restoring the (likely empty) saved
+    -- version, we reconstruct it from savedAllocNodeKeys: any saved allocated node with
+    -- id >= 0x10000 (cluster subgraph) must be re-allocated after BuildClusterJewelGraphs.
     wipeTable(spec.allocSubgraphNodes)
-    for i, v in ipairs(savedAllocSubgraph) do spec.allocSubgraphNodes[i] = v end
+    for k, _ in pairs(savedAllocNodeKeys) do
+      if k >= 0x10000 then
+        t_insert(spec.allocSubgraphNodes, k)
+      end
+    end
 
-    -- f. Restore jewels map
+    -- e. Restore jewels map
     wipeTable(spec.jewels)
     for k, v in pairs(savedJewels) do spec.jewels[k] = v end
 
-    -- g. Delete test item from items list
+    -- f. Delete test item from items list AND itemOrderList
+    --    (matches DeleteItem pattern in ItemsTab.lua:1554-1558)
+    --    Without the itemOrderList cleanup, exportBuildXml() crashes on
+    --    Classes/ItemsTab.lua:1121 when iterating orphaned nil entries.
     if createdItemId and itemsTab.items[createdItemId] then
+      for idx, id in pairs(itemsTab.itemOrderList) do
+        if id == createdItemId then
+          table.remove(itemsTab.itemOrderList, idx)
+          break
+        end
+      end
       itemsTab.items[createdItemId] = nil
     end
 
-    -- h. Rebuild paths and output to restore fully
+    -- g. Fix clusterJewelValid on ALL existing cluster jewels before rebuilding.
+    -- BuildClusterJewelGraphs() during the test may have called BuildModList on
+    -- existing items, resetting their jewelData. Re-fix before rebuilding subgraphs.
+    -- Then rebuild with BuildClusterJewelGraphs (NOT just BuildAllDependsAndPaths)
+    -- to properly destroy test subgraphs and recreate original ones.
     pcall(function()
-      spec:BuildAllDependsAndPaths()
+      for nid, itemId in pairs(spec.jewels) do
+        if itemId and itemId ~= 0 then
+          local item = itemsTab.items[itemId]
+          if item and item.clusterJewel then
+            M._fixClusterJewelValid(item)
+          end
+        end
+      end
+      spec:BuildClusterJewelGraphs()
+      itemsTab:UpdateSockets()
+      itemsTab:PopulateSlots()
       build.buildFlag = true
       M.get_main_output()
     end)
@@ -986,11 +1342,22 @@ function M.calc_with_jewel(params)
     itemsTab:AddItem(item, true) -- noAutoEquip = true
     createdItemId = item.id
 
+    -- Fix clusterJewelValid for multi-enchant bases (Claw+Dagger, etc.)
+    -- parseMod can't resolve clusterJewelSkill from concatenated keys, but the
+    -- "Cluster Jewel Skill:" metadata header (injected by TypeScript) sets
+    -- item.clusterJewelSkill. Copy it to jewelData so BuildClusterJewelGraphs works.
+    M._fixClusterJewelValid(item)
+
     -- 4c. Equip jewel to socket
     socketCtrl:SetSelItemId(createdItemId)
     itemsTab:PopulateSlots()
 
-    -- 4d. Trigger build (this runs BuildClusterJewelGraphs for cluster jewels)
+    -- 4d. Trigger build. For cluster jewels, we MUST call BuildClusterJewelGraphs
+    -- explicitly — get_main_output() only does wipeGlobalCache + BuildOutput, which
+    -- does NOT create/rebuild cluster subgraphs.
+    if item.clusterJewel then
+      spec:BuildClusterJewelGraphs()
+    end
     build.buildFlag = true
     M.get_main_output()
 
@@ -1114,6 +1481,463 @@ function M.calc_with_jewel(params)
 end
 
 
+-- Atomically test a cluster jewel chain (Large + nested Medium clusters) in a single operation.
+-- Supports: Large only, Medium only, Large + 1-2 Mediums.
+-- Returns { beforeOutput, afterOutput, allocatedNotables, totalPointCost }
+function M.calc_with_cluster_chain(params)
+  if not build or not build.spec then return nil, 'build/spec not initialized' end
+  if not build.itemsTab then return nil, 'items not initialized' end
+  if not build.calcsTab then return nil, 'calcs not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+
+  local outerNodeId = tonumber(params.outerSocketNodeId)
+  if not outerNodeId then return nil, 'missing or invalid outerSocketNodeId' end
+
+  local largeText = params.largeJewelText
+  local mediumTexts = params.mediumJewelTexts or {}
+  local useFullDPS = params.useFullDPS
+
+  -- Validate: need at least one jewel
+  local hasLarge = type(largeText) == 'string' and #largeText > 0
+  local hasMedium = type(mediumTexts) == 'table' and #mediumTexts > 0
+  if not hasLarge and not hasMedium then
+    return nil, 'need at least one of largeJewelText or mediumJewelTexts'
+  end
+
+  -- Length checks
+  if hasLarge and #largeText > MAX_ITEM_TEXT_LENGTH then
+    return nil, string.format('largeJewelText too long (max %d bytes)', MAX_ITEM_TEXT_LENGTH)
+  end
+  if hasMedium then
+    for i, mt in ipairs(mediumTexts) do
+      if type(mt) ~= 'string' or #mt == 0 then
+        return nil, 'mediumJewelTexts[' .. tostring(i) .. '] is empty or not a string'
+      end
+      if #mt > MAX_ITEM_TEXT_LENGTH then
+        return nil, string.format('mediumJewelTexts[%d] too long (max %d bytes)', i, MAX_ITEM_TEXT_LENGTH)
+      end
+    end
+  end
+
+  local spec = build.spec
+  local itemsTab = build.itemsTab
+
+  -- Verify outer socket
+  local outerSocketCtrl = itemsTab.sockets[outerNodeId]
+  if not outerSocketCtrl then
+    return nil, 'outerSocketNodeId ' .. tostring(outerNodeId) .. ' is not a jewel socket'
+  end
+
+  -- 1. Capture beforeOutput
+  build.calcsTab:BuildOutput()
+  local beforeOutput = deepCopySafe(build.calcsTab.mainOutput)
+
+  -- 2. Snapshot ALL mutable state
+  local savedJewels = {}
+  for k, v in pairs(spec.jewels) do savedJewels[k] = v end
+
+  local savedAllocNodeKeys = {}
+  for k, _ in pairs(spec.allocNodes) do savedAllocNodeKeys[k] = true end
+
+  local savedAllocExtended = {}
+  for i, v in ipairs(spec.allocExtendedNodes) do savedAllocExtended[i] = v end
+
+  local savedAllocSubgraph = {}
+  for i, v in ipairs(spec.allocSubgraphNodes) do savedAllocSubgraph[i] = v end
+
+  local savedNodeKeys = {}
+  for k, _ in pairs(spec.nodes) do savedNodeKeys[k] = true end
+
+  local savedOuterSelId = outerSocketCtrl.selItemId
+
+  -- Snapshot ALL socket selItemIds so we can restore nested ones too
+  local savedSocketSelIds = {}
+  for nid, ctrl in pairs(itemsTab.sockets) do
+    savedSocketSelIds[nid] = ctrl.selItemId
+  end
+
+  -- Track ALL created item IDs for cleanup
+  local createdItemIds = {}
+
+  -- 3. Define restore function (MUST run regardless of success/failure)
+  local function restoreState()
+    -- a. Restore outer socket selection
+    pcall(function()
+      outerSocketCtrl:SetSelItemId(savedOuterSelId or 0)
+      itemsTab:PopulateSlots()
+    end)
+
+    -- b. Restore any nested socket selections that were changed
+    pcall(function()
+      for nid, ctrl in pairs(itemsTab.sockets) do
+        local savedId = savedSocketSelIds[nid]
+        if savedId and ctrl.selItemId ~= savedId then
+          ctrl:SetSelItemId(savedId)
+        end
+      end
+      itemsTab:PopulateSlots()
+    end)
+
+    -- c. Rebuild to destroy cluster subgraphs
+    pcall(function()
+      build.buildFlag = true
+      M.get_main_output()
+    end)
+
+    -- d. Restore allocNodes
+    for k, _ in pairs(spec.allocNodes) do
+      if not savedAllocNodeKeys[k] then
+        spec.allocNodes[k] = nil
+      end
+    end
+    for k, _ in pairs(savedAllocNodeKeys) do
+      if not spec.allocNodes[k] then
+        local node = spec.nodes[k]
+        if node then spec.allocNodes[k] = node end
+      end
+    end
+
+    -- e. Restore allocExtendedNodes
+    wipeTable(spec.allocExtendedNodes)
+    for i, v in ipairs(savedAllocExtended) do spec.allocExtendedNodes[i] = v end
+
+    -- f. Restore allocSubgraphNodes.
+    -- NOTE: allocSubgraphNodes is a TEMPORARY buffer consumed by BuildClusterJewelGraphs.
+    -- It's typically empty after a build load. Instead of restoring the (likely empty) saved
+    -- version, we reconstruct it from savedAllocNodeKeys: any saved allocated node with
+    -- id >= 0x10000 (cluster subgraph) must be re-allocated after BuildClusterJewelGraphs.
+    wipeTable(spec.allocSubgraphNodes)
+    for k, _ in pairs(savedAllocNodeKeys) do
+      if k >= 0x10000 then
+        t_insert(spec.allocSubgraphNodes, k)
+      end
+    end
+
+    -- g. Restore jewels
+    wipeTable(spec.jewels)
+    for k, v in pairs(savedJewels) do spec.jewels[k] = v end
+
+    -- h. Delete ALL test items from items list AND itemOrderList (Section 15A)
+    for _, cid in ipairs(createdItemIds) do
+      if cid and itemsTab.items[cid] then
+        for idx, id in pairs(itemsTab.itemOrderList) do
+          if id == cid then
+            table.remove(itemsTab.itemOrderList, idx)
+            break
+          end
+        end
+        itemsTab.items[cid] = nil
+      end
+    end
+
+    -- i. Fix clusterJewelValid on ALL cluster jewels (not just test items).
+    -- BuildClusterJewelGraphs() + BuildOutput() during the test may have called
+    -- BuildModList on existing items, resetting their jewelData. We must re-fix
+    -- all cluster jewels before rebuilding subgraphs.
+    pcall(function()
+      for nid, itemId in pairs(spec.jewels) do
+        if itemId and itemId ~= 0 then
+          local item = itemsTab.items[itemId]
+          if item and item.clusterJewel then
+            M._fixClusterJewelValid(item)
+          end
+        end
+      end
+      spec:BuildClusterJewelGraphs()
+      itemsTab:UpdateSockets()
+      itemsTab:PopulateSlots()
+      build.buildFlag = true
+      M.get_main_output()
+    end)
+  end
+
+  -- 4. Execute in pcall-protected block
+  local ok, result = pcall(function()
+    -- 4a. Path to outer socket if needed
+    if not spec.allocNodes[outerNodeId] then
+      local current = M.get_tree()
+      if not current then error('failed to get current tree') end
+      local newNodeSet = {}
+      for _, id in ipairs(current.nodes) do
+        newNodeSet[tonumber(id)] = true
+      end
+
+      if params.autoAllocateSocketPath then
+        local pathResult, pathErr = M.find_path({ targetNodeId = outerNodeId })
+        if not pathResult then
+          error('failed to path to socket ' .. tostring(outerNodeId) .. ': ' .. tostring(pathErr))
+        end
+        for _, pathNode in ipairs(pathResult.path or {}) do
+          if pathNode and pathNode.id then
+            newNodeSet[tonumber(pathNode.id)] = true
+          end
+        end
+      end
+
+      newNodeSet[outerNodeId] = true
+      local newNodes = {}
+      for id, _ in pairs(newNodeSet) do t_insert(newNodes, id) end
+      table.sort(newNodes)
+      spec:ImportFromNodeList(
+        current.classId or 0,
+        current.ascendClassId or 0,
+        current.secondaryAscendClassId or 0,
+        newNodes,
+        {},
+        current.masteryEffects or {}
+      )
+      itemsTab:UpdateSockets()
+    end
+
+    -- 4b. Determine primary jewel (Large if present, else first Medium)
+    local primaryText = nil
+    local remainingMediums = {}
+    if hasLarge then
+      primaryText = largeText
+      for i, mt in ipairs(mediumTexts) do
+        t_insert(remainingMediums, mt)
+      end
+    else
+      -- Medium-only: equip first medium in outer socket
+      primaryText = mediumTexts[1]
+      for i = 2, #mediumTexts do
+        t_insert(remainingMediums, mediumTexts[i])
+      end
+    end
+
+    -- 4c. Create and equip primary jewel
+    local parseOk, primaryItem = pcall(new, 'Item', primaryText)
+    if not parseOk then error('invalid primary jewel text: ' .. tostring(primaryItem)) end
+    if not primaryItem or not primaryItem.baseName then error('failed to parse primary jewel') end
+    if primaryItem.type ~= 'Jewel' then error('primary item is not a jewel (type: ' .. tostring(primaryItem.type) .. ')') end
+
+    primaryItem:NormaliseQuality()
+    itemsTab:AddItem(primaryItem, true) -- noAutoEquip
+    t_insert(createdItemIds, primaryItem.id)
+
+    -- 4d. Equip primary jewel and rebuild cluster subgraphs.
+    -- BYPASS: Set spec.jewels directly instead of using SetSelItemId. SetSelItemId
+    -- triggers BuildClusterJewelGraphs internally, which calls BuildModList on items,
+    -- recreating jewelData from scratch. For multi-enchant cluster skills (e.g.,
+    -- "Claw + Dagger"), PoB's parseMod can't match individual enchant lines to the
+    -- concatenated key in clusterJewelSkills, so jewelData.clusterJewelSkill stays nil
+    -- after every BuildModList call. By using the spec.jewels bypass and calling
+    -- BuildClusterJewelGraphs ourselves, we can apply the fix right before the rebuild.
+    --
+    -- CRITICAL: _fixClusterJewelValid MUST run AFTER AddItem (which calls BuildModList,
+    -- recreating jewelData = {}) and BEFORE BuildClusterJewelGraphs (which reads
+    -- jewelData.clusterJewelValid to decide whether to create the subgraph).
+    spec.jewels[outerNodeId] = primaryItem.id
+    outerSocketCtrl.selItemId = primaryItem.id
+    M._fixClusterJewelValid(primaryItem)
+    spec:BuildClusterJewelGraphs()
+    itemsTab:UpdateSockets()
+    itemsTab:PopulateSlots()
+    build.buildFlag = true
+    M.get_main_output()
+
+    -- 4e. Equip medium jewels in nested sockets (if we equipped a Large and have mediums)
+    local equippedMediums = 0
+    if hasLarge and #remainingMediums > 0 then
+      -- After equipping a Large cluster, BuildClusterJewelGraphs creates subgraph nodes
+      -- including nested jewel sockets. These sockets are in spec.nodes but NOT in
+      -- itemsTab.sockets (they're unallocated). We can't use the socket controller
+      -- (SetSelItemId) because UpdateSockets only registers ALLOCATED sockets.
+      --
+      -- BYPASS: Set spec.jewels[nestedSocketId] = mediumItemId directly. This is PoB's
+      -- internal jewel-to-socket mapping. Then call BuildClusterJewelGraphs() which
+      -- destroys and recreates ALL subgraphs from spec.jewels. During rebuild, it finds
+      -- the Medium jewels in nested sockets and recursively creates their subgraphs.
+
+      -- Find nested Socket nodes from the outer socket's subgraph structure directly.
+      -- NOTE: We do NOT use savedNodeKeys comparison because BuildClusterJewelGraphs
+      -- destroys and recreates ALL subgraphs. On replacement (socket already had a
+      -- cluster), the recreated nodes reuse the same proxy IDs, making them invisible
+      -- to a savedNodeKeys diff. Instead, we traverse spec.subGraphs to find the
+      -- subgraph whose parentSocket matches our outer socket, then extract its Socket nodes.
+      local nestedSocketIds = {}
+      for _, subGraph in pairs(spec.subGraphs) do
+        if subGraph.parentSocket and subGraph.parentSocket.id == outerNodeId then
+          for _, node in ipairs(subGraph.nodes) do
+            if node.type == "Socket" and node.expansionJewel then
+              t_insert(nestedSocketIds, node.id)
+            end
+          end
+          break
+        end
+      end
+      table.sort(nestedSocketIds)
+
+      io.stderr:write(string.format("[calc_with_cluster_chain] Found %d nested socket nodes in Large subgraph\n", #nestedSocketIds))
+
+      -- Create and equip each medium directly via spec.jewels
+      for i, mt in ipairs(remainingMediums) do
+        if i > #nestedSocketIds then
+          io.stderr:write(string.format("[calc_with_cluster_chain] No nested socket for medium #%d (only %d available), skipping\n", i, #nestedSocketIds))
+          break
+        end
+
+        local mParseOk, mediumItem = pcall(new, 'Item', mt)
+        if not mParseOk then
+          io.stderr:write(string.format("[calc_with_cluster_chain] Failed to parse medium #%d: %s\n", i, tostring(mediumItem)))
+        else
+          if mediumItem and mediumItem.baseName and mediumItem.type == 'Jewel' then
+            mediumItem:NormaliseQuality()
+            itemsTab:AddItem(mediumItem, true) -- noAutoEquip
+            M._fixClusterJewelValid(mediumItem) -- MUST be after AddItem (which calls BuildModList)
+            t_insert(createdItemIds, mediumItem.id)
+
+            -- Direct jewel mapping bypass — spec.jewels is what BuildClusterJewelGraphs reads
+            local nestedSocketId = nestedSocketIds[i]
+            spec.jewels[nestedSocketId] = mediumItem.id
+            equippedMediums = equippedMediums + 1
+            io.stderr:write(string.format("[calc_with_cluster_chain] Equipped medium #%d (item %d) in nested socket %d via spec.jewels\n", i, mediumItem.id, nestedSocketId))
+          else
+            io.stderr:write(string.format("[calc_with_cluster_chain] Medium #%d is not a valid jewel\n", i))
+          end
+        end
+      end
+
+      -- Rebuild cluster subgraphs to create medium subgraphs from the spec.jewels mapping.
+      -- CRITICAL: Must call BuildClusterJewelGraphs(), NOT just BuildAllDependsAndPaths().
+      -- BuildAllDependsAndPaths only rebuilds depends/paths but does NOT create cluster
+      -- subgraphs. BuildClusterJewelGraphs destroys and recreates ALL subgraphs, then
+      -- internally calls BuildAllDependsAndPaths. During recreation, it finds the Medium
+      -- jewels in spec.jewels[nestedSocketId] and recursively creates Medium subgraphs.
+      if equippedMediums > 0 then
+        spec:BuildClusterJewelGraphs()
+        itemsTab:UpdateSockets()
+        build.buildFlag = true
+        M.get_main_output()
+        io.stderr:write(string.format("[calc_with_cluster_chain] Rebuilt cluster graphs after equipping %d mediums\n", equippedMediums))
+      end
+    end
+
+    -- 4f. Auto-allocate ALL notables across entire cluster chain
+    local allocatedNotableIds = {}
+    local totalPointCost = 0
+
+    if params.autoAllocateNotables then
+      -- Find ALL cluster subgraph nodes (both new and rebuilt from replacement).
+      -- Cluster subgraph nodes have id >= 0x10000 (65536). We collect all of them
+      -- rather than just "new" ones because replacement tests reuse existing IDs.
+      local clusterNodes = {}
+      for k, node in pairs(spec.nodes) do
+        if k >= 0x10000 then
+          t_insert(clusterNodes, node)
+        end
+      end
+
+      -- Find all notables among cluster nodes
+      -- Check both node.type == "Notable" and node.isNotable flag (PoB uses both)
+      local notables = {}
+      for _, node in ipairs(clusterNodes) do
+        if node.type == "Notable" or node.isNotable then
+          -- Only include notables that are NOT already allocated (avoid re-allocating
+          -- notables from other cluster jewels that we're not testing)
+          if not spec.allocNodes[node.id] then
+            t_insert(notables, node)
+          end
+        end
+      end
+
+      if #notables > 0 then
+        io.stderr:write(string.format("[calc_with_cluster_chain] Found %d unallocated notables among %d cluster nodes\n", #notables, #clusterNodes))
+      end
+
+      -- BFS from outer socket through ALL cluster nodes (traverses nested sockets too)
+      if #notables > 0 then
+        for _, notable in ipairs(notables) do
+          local visited = {}
+          local queue = {}
+          local parent = {}
+          local socketNode = spec.nodes[outerNodeId]
+          if socketNode then
+            t_insert(queue, socketNode)
+            visited[socketNode.id] = true
+            local found = false
+            local bfsSteps = 0
+            while #queue > 0 and not found do
+              local current = table.remove(queue, 1)
+              bfsSteps = bfsSteps + 1
+              if current.id == notable.id then
+                found = true
+                break
+              end
+              if current.linked then
+                for _, linked in ipairs(current.linked) do
+                  if not visited[linked.id] then
+                    -- Traverse through ANY cluster subgraph node or the outer socket.
+                    -- We can't filter by savedNodeKeys because replacement tests reuse
+                    -- existing subgraph node IDs. Cluster subgraph nodes have id >= 0x10000.
+                    local isClusterNode = linked.id >= 0x10000
+                    local isNew = not savedNodeKeys[linked.id]
+                    local isSelf = linked.id == outerNodeId
+                    if isClusterNode or isNew or isSelf then
+                      visited[linked.id] = true
+                      parent[linked.id] = current.id
+                      t_insert(queue, linked)
+                    end
+                  end
+                end
+              end
+            end
+
+            if found then
+              local pathId = notable.id
+              while pathId and pathId ~= outerNodeId do
+                local pathNode = spec.nodes[pathId]
+                if pathNode and not spec.allocNodes[pathId] then
+                  pathNode.alloc = true
+                  spec.allocNodes[pathId] = pathNode
+                  totalPointCost = totalPointCost + 1
+                end
+                pathId = parent[pathId]
+              end
+              t_insert(allocatedNotableIds, notable.id)
+            end
+          end
+        end
+      end
+    end
+
+    -- 4g. Final rebuild if any nodes were allocated
+    if #allocatedNotableIds > 0 then
+      build.buildFlag = true
+      M.get_main_output()
+    end
+
+    -- 4h. Capture afterOutput
+    local afterOutput = deepCopySafe(build.calcsTab.mainOutput)
+
+    -- Diagnostic log
+    local bDPS = beforeOutput and beforeOutput.CombinedDPS or 0
+    local aDPS = afterOutput and afterOutput.CombinedDPS or 0
+    io.stderr:write(string.format(
+      "[calc_with_cluster_chain] before CombinedDPS=%.1f  after CombinedDPS=%.1f  delta=%.1f  notables=%d  pointCost=%d\n",
+      bDPS, aDPS, aDPS - bDPS, #allocatedNotableIds, totalPointCost
+    ))
+
+    return {
+      beforeOutput = beforeOutput,
+      afterOutput = afterOutput,
+      allocatedNotables = allocatedNotableIds,
+      totalPointCost = totalPointCost,
+      nestedSocketsUsed = equippedMediums,
+    }
+  end)
+
+  -- 5. ALWAYS restore state
+  restoreState()
+
+  -- 6. Return result or error
+  if not ok then
+    return nil, tostring(result)
+  end
+  return result
+end
+
+
 -- Get basic config values
 function M.get_config()
   if not build or not build.configTab then return nil, 'build/config not initialized' end
@@ -1130,6 +1954,10 @@ end
 function M.get_full_config()
   if not build or not build.configTab then return nil, 'build/config not initialized' end
   local input = build.configTab.input or {}
+  local conditionEnemyChilled = input.conditionEnemyChilled or false
+  local conditionEnemyShocked = input.conditionEnemyShocked or false
+  local conditionEnemyCrushed = input.conditionEnemyCrushed or false
+  local conditionEnemyBlinded = input.conditionEnemyBlinded or false
   local cfg = {
     -- Basic config
     bandit = input.bandit or build.bandit,
@@ -1153,6 +1981,12 @@ function M.get_full_config()
     buffTailwind = input.buffTailwind or false,
     buffAdrenaline = input.buffAdrenaline or false,
     buffUnholyMight = input.buffUnholyMight or false,
+    buffPhasing = input.buffPhasing or false,
+    buffElusive = input.buffElusive or false,
+    buffArcaneSurge = input.buffArcaneSurge or false,
+    buffFanaticism = input.buffFanaticism or false,
+    buffDivinity = input.buffDivinity or false,
+    buffConvergence = input.buffConvergence or false,
     conditionUsingFlask = input.conditionUsingFlask or false,
 
     -- Combat conditions
@@ -1160,17 +1994,42 @@ function M.get_full_config()
     conditionFullLife = input.conditionFullLife or false,
     conditionLowMana = input.conditionLowMana or false,
     conditionFullMana = input.conditionFullMana or false,
+    conditionLeeching = input.conditionLeeching or false,
+    conditionOnConsecratedGround = input.conditionOnConsecratedGround or false,
+    conditionKilledRecently = input.conditionKilledRecently or false,
+    conditionHitRecently = input.conditionHitRecently or false,
+    conditionCritRecently = input.conditionCritRecently or false,
+    conditionBeenHitRecently = input.conditionBeenHitRecently or false,
 
     -- Enemy conditions
-    enemyIsBoss = input.enemyIsBoss or "None",
+    enemyIsBoss = input.enemyIsBoss or "Pinnacle",
     conditionEnemyIntimidated = input.conditionEnemyIntimidated or false,
     conditionEnemyUnnerved = input.conditionEnemyUnnerved or false,
     conditionEnemyCoveredInAsh = input.conditionEnemyCoveredInAsh or false,
     conditionEnemyCoveredInFrost = input.conditionEnemyCoveredInFrost or false,
-    enemyIsChilled = input.conditionEnemyChilled or false,
-    enemyIsShocked = input.conditionEnemyShocked or false,
-    enemyIsCrushed = input.conditionEnemyCrushed or false,
-    enemyIsBlinded = input.conditionEnemyBlinded or false,
+    conditionEnemyMaimed = input.conditionEnemyMaimed or false,
+    conditionEnemyBleeding = input.conditionEnemyBleeding or false,
+    conditionEnemyPoisoned = input.conditionEnemyPoisoned or false,
+    conditionEnemyIgnited = input.conditionEnemyIgnited or false,
+    conditionEnemyBurning = input.conditionEnemyBurning or false,
+    conditionEnemyHindered = input.conditionEnemyHindered or false,
+    conditionEnemyTaunted = input.conditionEnemyTaunted or false,
+    conditionEnemyDebilitated = input.conditionEnemyDebilitated or false,
+    conditionEnemyFireExposure = input.conditionEnemyFireExposure or false,
+    conditionEnemyColdExposure = input.conditionEnemyColdExposure or false,
+    conditionEnemyLightningExposure = input.conditionEnemyLightningExposure or false,
+    conditionEnemyScorched = input.conditionEnemyScorched or false,
+    conditionEnemyBrittle = input.conditionEnemyBrittle or false,
+    conditionEnemySapped = input.conditionEnemySapped or false,
+    conditionEnemyChilled = conditionEnemyChilled,
+    conditionEnemyShocked = conditionEnemyShocked,
+    conditionEnemyCrushed = conditionEnemyCrushed,
+    conditionEnemyBlinded = conditionEnemyBlinded,
+    -- Legacy aliases used by older TypeScript surfaces
+    enemyIsChilled = conditionEnemyChilled,
+    enemyIsShocked = conditionEnemyShocked,
+    enemyIsCrushed = conditionEnemyCrushed,
+    enemyIsBlinded = conditionEnemyBlinded,
 
     -- Enemy stats overrides
     enemyFireResist = input.enemyFireResist,
@@ -1179,8 +2038,24 @@ function M.get_full_config()
     enemyChaosResist = input.enemyChaosResist,
     enemyPhysicalDamageReduction = input.enemyPhysicalDamageReduction,
 
+    -- Skill-specific numeric vars (set via set_skill_config / set_batch_skill_config)
+    multiplierWitheredStackCount = input.multiplierWitheredStackCount or 0,
+    conditionShockEffect = input.conditionShockEffect or 0,
+    conditionEnemyChilledEffect = input.conditionEnemyChilledEffect or 0,
+    conditionScorchedEffect = input.conditionScorchedEffect or 0,
+    conditionBrittleEffect = input.conditionBrittleEffect or 0,
+    conditionSapEffect = input.conditionSapEffect or 0,
+    multiplierPoisonOnEnemy = input.multiplierPoisonOnEnemy or 0,
+    multiplierRage = input.multiplierRage or 0,
+    multiplierImpalesOnEnemy = input.multiplierImpalesOnEnemy or 0,
+    multiplierRuptureStacks = input.multiplierRuptureStacks or 0,
+    multiplierCorrosionStackCount = input.multiplierCorrosionStackCount or 0,
+    multiplierManaBurnStacks = input.multiplierManaBurnStacks or 0,
+
     -- Custom modifiers
     customMods = input.customMods or "",
+    disabledCurses = input.disabledCurses,
+    overrideCurseLimit = input.overrideCurseLimit,
   }
   return cfg
 end
@@ -1217,6 +2092,7 @@ function M.set_config(params)
   if params.buffAdrenaline ~= nil then input.buffAdrenaline = params.buffAdrenaline; changed = true end
   if params.buffElusive ~= nil then input.buffElusive = params.buffElusive; changed = true end
   if params.buffUnholyMight ~= nil then input.buffUnholyMight = params.buffUnholyMight; changed = true end
+  if params.buffPhasing ~= nil then input.buffPhasing = params.buffPhasing; changed = true end
   if params.buffArcaneSurge ~= nil then input.buffArcaneSurge = params.buffArcaneSurge; changed = true end
   if params.buffFanaticism ~= nil then input.buffFanaticism = params.buffFanaticism; changed = true end
   if params.buffDivinity ~= nil then input.buffDivinity = params.buffDivinity; changed = true end
@@ -1241,33 +2117,29 @@ function M.set_config(params)
   if params.conditionEnemyUnnerved ~= nil then input.conditionEnemyUnnerved = params.conditionEnemyUnnerved; changed = true end
   if params.conditionEnemyCoveredInAsh ~= nil then input.conditionEnemyCoveredInAsh = params.conditionEnemyCoveredInAsh; changed = true end
   if params.conditionEnemyCoveredInFrost ~= nil then input.conditionEnemyCoveredInFrost = params.conditionEnemyCoveredInFrost; changed = true end
-  if params.conditionEnemyPoisoned ~= nil then input.conditionEnemyPoisoned = params.conditionEnemyPoisoned; changed = true end
-  if params.conditionEnemyBleeding ~= nil then input.conditionEnemyBleeding = params.conditionEnemyBleeding; changed = true end
   if params.conditionEnemyMaimed ~= nil then input.conditionEnemyMaimed = params.conditionEnemyMaimed; changed = true end
-  if params.conditionEnemyHindered ~= nil then input.conditionEnemyHindered = params.conditionEnemyHindered; changed = true end
-  if params.conditionEnemyBurning ~= nil then input.conditionEnemyBurning = params.conditionEnemyBurning; changed = true end
+  if params.conditionEnemyBleeding ~= nil then input.conditionEnemyBleeding = params.conditionEnemyBleeding; changed = true end
+  if params.conditionEnemyPoisoned ~= nil then input.conditionEnemyPoisoned = params.conditionEnemyPoisoned; changed = true end
   if params.conditionEnemyIgnited ~= nil then input.conditionEnemyIgnited = params.conditionEnemyIgnited; changed = true end
+  if params.conditionEnemyBurning ~= nil then input.conditionEnemyBurning = params.conditionEnemyBurning; changed = true end
+  if params.conditionEnemyHindered ~= nil then input.conditionEnemyHindered = params.conditionEnemyHindered; changed = true end
   if params.conditionEnemyTaunted ~= nil then input.conditionEnemyTaunted = params.conditionEnemyTaunted; changed = true end
   if params.conditionEnemyDebilitated ~= nil then input.conditionEnemyDebilitated = params.conditionEnemyDebilitated; changed = true end
-  -- Ailments: accept both legacy mapped names (enemyIsX) and direct internal names (conditionEnemyX)
-  if params.enemyIsChilled ~= nil then input.conditionEnemyChilled = params.enemyIsChilled; changed = true end
-  if params.conditionEnemyChilled ~= nil then input.conditionEnemyChilled = params.conditionEnemyChilled; changed = true end
-  if params.enemyIsShocked ~= nil then input.conditionEnemyShocked = params.enemyIsShocked; changed = true end
-  if params.conditionEnemyShocked ~= nil then input.conditionEnemyShocked = params.conditionEnemyShocked; changed = true end
-  if params.enemyIsCrushed ~= nil then input.conditionEnemyCrushed = params.enemyIsCrushed; changed = true end
-  if params.conditionEnemyCrushed ~= nil then input.conditionEnemyCrushed = params.conditionEnemyCrushed; changed = true end
-  if params.enemyIsBlinded ~= nil then input.conditionEnemyBlinded = params.enemyIsBlinded; changed = true end
-  if params.conditionEnemyBlinded ~= nil then input.conditionEnemyBlinded = params.conditionEnemyBlinded; changed = true end
-
-  -- Exposures
   if params.conditionEnemyFireExposure ~= nil then input.conditionEnemyFireExposure = params.conditionEnemyFireExposure; changed = true end
   if params.conditionEnemyColdExposure ~= nil then input.conditionEnemyColdExposure = params.conditionEnemyColdExposure; changed = true end
   if params.conditionEnemyLightningExposure ~= nil then input.conditionEnemyLightningExposure = params.conditionEnemyLightningExposure; changed = true end
-
-  -- Alternative ailments
   if params.conditionEnemyScorched ~= nil then input.conditionEnemyScorched = params.conditionEnemyScorched; changed = true end
   if params.conditionEnemyBrittle ~= nil then input.conditionEnemyBrittle = params.conditionEnemyBrittle; changed = true end
   if params.conditionEnemySapped ~= nil then input.conditionEnemySapped = params.conditionEnemySapped; changed = true end
+  if params.conditionEnemyChilled ~= nil then input.conditionEnemyChilled = params.conditionEnemyChilled; changed = true end
+  if params.conditionEnemyShocked ~= nil then input.conditionEnemyShocked = params.conditionEnemyShocked; changed = true end
+  if params.conditionEnemyCrushed ~= nil then input.conditionEnemyCrushed = params.conditionEnemyCrushed; changed = true end
+  if params.conditionEnemyBlinded ~= nil then input.conditionEnemyBlinded = params.conditionEnemyBlinded; changed = true end
+  -- Backward-compat aliases
+  if params.enemyIsChilled ~= nil then input.conditionEnemyChilled = params.enemyIsChilled; changed = true end
+  if params.enemyIsShocked ~= nil then input.conditionEnemyShocked = params.enemyIsShocked; changed = true end
+  if params.enemyIsCrushed ~= nil then input.conditionEnemyCrushed = params.enemyIsCrushed; changed = true end
+  if params.enemyIsBlinded ~= nil then input.conditionEnemyBlinded = params.enemyIsBlinded; changed = true end
 
   -- Enemy stats overrides
   if params.enemyFireResist ~= nil then input.enemyFireResist = tonumber(params.enemyFireResist); changed = true end
@@ -1275,6 +2147,38 @@ function M.set_config(params)
   if params.enemyLightningResist ~= nil then input.enemyLightningResist = tonumber(params.enemyLightningResist); changed = true end
   if params.enemyChaosResist ~= nil then input.enemyChaosResist = tonumber(params.enemyChaosResist); changed = true end
   if params.enemyPhysicalDamageReduction ~= nil then input.enemyPhysicalDamageReduction = tonumber(params.enemyPhysicalDamageReduction); changed = true end
+
+  -- Skill-specific numeric vars
+  -- When setting a numeric var to 0, also clear its placeholder so BuildModList
+  -- doesn't fall back to the auto-calculated placeholder value.
+  local placeholder = build.configTab.configSets
+    and build.configTab.configSets[build.configTab.activeConfigSetId]
+    and build.configTab.configSets[build.configTab.activeConfigSetId].placeholder
+  local function setNumericVar(varName, rawValue)
+    local val = tonumber(rawValue)
+    input[varName] = val
+    if val == 0 and placeholder then placeholder[varName] = nil end
+    changed = true
+  end
+  if params.multiplierWitheredStackCount ~= nil then setNumericVar('multiplierWitheredStackCount', params.multiplierWitheredStackCount) end
+  if params.conditionShockEffect ~= nil then setNumericVar('conditionShockEffect', params.conditionShockEffect) end
+  if params.conditionEnemyChilledEffect ~= nil then setNumericVar('conditionEnemyChilledEffect', params.conditionEnemyChilledEffect) end
+  if params.conditionScorchedEffect ~= nil then setNumericVar('conditionScorchedEffect', params.conditionScorchedEffect) end
+  if params.conditionBrittleEffect ~= nil then setNumericVar('conditionBrittleEffect', params.conditionBrittleEffect) end
+  if params.conditionSapEffect ~= nil then setNumericVar('conditionSapEffect', params.conditionSapEffect) end
+  if params.multiplierPoisonOnEnemy ~= nil then setNumericVar('multiplierPoisonOnEnemy', params.multiplierPoisonOnEnemy) end
+  if params.multiplierRage ~= nil then setNumericVar('multiplierRage', params.multiplierRage) end
+  if params.multiplierImpalesOnEnemy ~= nil then setNumericVar('multiplierImpalesOnEnemy', params.multiplierImpalesOnEnemy) end
+  if params.multiplierRuptureStacks ~= nil then setNumericVar('multiplierRuptureStacks', params.multiplierRuptureStacks) end
+  if params.multiplierCorrosionStackCount ~= nil then setNumericVar('multiplierCorrosionStackCount', params.multiplierCorrosionStackCount) end
+  if params.multiplierManaBurnStacks ~= nil then setNumericVar('multiplierManaBurnStacks', params.multiplierManaBurnStacks) end
+
+  -- Support gem configs (gems that need config to show real DPS)
+  if params.configResonanceCount ~= nil then setNumericVar('configResonanceCount', params.configResonanceCount) end
+  if params.configUnholyResonanceCount ~= nil then setNumericVar('configUnholyResonanceCount', params.configUnholyResonanceCount) end
+  if params.infusedChannellingInfusion ~= nil then input.infusedChannellingInfusion = params.infusedChannellingInfusion; changed = true end
+  if params.intensifyIntensity ~= nil then setNumericVar('intensifyIntensity', params.intensifyIntensity) end
+  if params.sigilOfPowerStages ~= nil then setNumericVar('sigilOfPowerStages', params.sigilOfPowerStages) end
 
   -- Custom modifiers
   if params.customMods ~= nil then input.customMods = tostring(params.customMods); changed = true end
@@ -1300,7 +2204,29 @@ function M.set_config(params)
     changed = true
   end
 
+  -- Preserve ALL input vars across BuildModList().
+  -- BuildModList() rebuilds the modifier list from ConfigOptions, which can
+  -- reset vars that were set via the API but not explicitly passed in this
+  -- set_config call. Snapshot the entire input table before rebuild, then
+  -- restore any values that were wiped. Only restore keys that were NOT
+  -- explicitly set by THIS call (tracked via the params table).
+  local savedInput = {}
+  for k, v in pairs(input) do
+    savedInput[k] = v
+  end
+
   if changed and build.configTab.BuildModList then build.configTab:BuildModList() end
+
+  -- Restore any input vars that were wiped by BuildModList but were NOT
+  -- explicitly changed by this set_config call
+  for k, v in pairs(savedInput) do
+    if input[k] ~= v and params[k] == nil then
+      input[k] = v
+    end
+  end
+  -- Wipe GlobalCache so BuildOutput() recalculates with updated config
+  -- (e.g. customMods changing resistances must invalidate cached EHP)
+  build.buildFlag = true
   M.get_main_output()
   return true
 end
@@ -1407,10 +2333,10 @@ function M.get_skills()
             -- Dual-nature gem support (e.g., Autoexertion has both active warcry and support effect)
             hasSecondarySupport = hasSecondarySupport or nil,  -- nil if false to keep JSON clean
             secondarySupportName = secondarySupportName,
-            -- Attribute requirements (computed by PoB from gem level + base multiplier)
-            reqStr = gem.reqStr and gem.reqStr > 0 and gem.reqStr or nil,
-            reqDex = gem.reqDex and gem.reqDex > 0 and gem.reqDex or nil,
-            reqInt = gem.reqInt and gem.reqInt > 0 and gem.reqInt or nil,
+            -- Attribute requirements (use reqOverride when available, matching CalcSetup behavior)
+            reqStr = (gem.reqOverride or gem.reqStr) and (gem.reqOverride or gem.reqStr) > 0 and (gem.reqOverride or gem.reqStr) or nil,
+            reqDex = (gem.reqOverride or gem.reqDex) and (gem.reqOverride or gem.reqDex) > 0 and (gem.reqOverride or gem.reqDex) or nil,
+            reqInt = (gem.reqOverride or gem.reqInt) and (gem.reqOverride or gem.reqInt) > 0 and (gem.reqOverride or gem.reqInt) or nil,
           })
         end
       end
@@ -1420,6 +2346,7 @@ function M.get_skills()
       index = idx,
       label = g.label,
       slot = g.slot,
+      source = g.source,
       enabled = g.enabled,
       includeInFullDPS = g.includeInFullDPS,
       mainActiveSkill = g.mainActiveSkill,
@@ -1480,6 +2407,15 @@ function M.add_item_text(params)
     local slot = tostring(params.slotName)
     if build.itemsTab.slots[slot] then
       build.itemsTab.slots[slot]:SetSelItemId(item.id)
+      -- Auto-activate flasks when equipped via API (matches add_items_batch behavior)
+      if slot:match('^Flask %d$') and build.itemsTab.activeItemSet
+          and build.itemsTab.activeItemSet[slot] then
+        build.itemsTab.activeItemSet[slot].active = true
+        build.itemsTab.slots[slot].active = true
+        if build.itemsTab.slots[slot].controls and build.itemsTab.slots[slot].controls.activate then
+          build.itemsTab.slots[slot].controls.activate.state = true
+        end
+      end
       build.itemsTab:PopulateSlots()
     end
   end
@@ -1554,6 +2490,13 @@ function M.add_items_batch(params)
         if slot:match('^Flask %d$') and build.itemsTab.activeItemSet
             and build.itemsTab.activeItemSet[slot] then
           build.itemsTab.activeItemSet[slot].active = true
+          -- Also update the slot control — calc engine reads slot.active
+          if build.itemsTab.slots[slot] then
+            build.itemsTab.slots[slot].active = true
+            if build.itemsTab.slots[slot].controls and build.itemsTab.slots[slot].controls.activate then
+              build.itemsTab.slots[slot].controls.activate.state = true
+            end
+          end
         end
       end
     end
@@ -1590,6 +2533,13 @@ function M.set_flask_active(params)
   local slotName = 'Flask ' .. tostring(idx)
   if not build.itemsTab.activeItemSet or not build.itemsTab.activeItemSet[slotName] then return nil, 'slot not found' end
   build.itemsTab.activeItemSet[slotName].active = active
+  -- Also update the slot control — the calc engine reads slot.active, not activeItemSet
+  if build.itemsTab.slots[slotName] then
+    build.itemsTab.slots[slotName].active = active
+    if build.itemsTab.slots[slotName].controls and build.itemsTab.slots[slotName].controls.activate then
+      build.itemsTab.slots[slotName].controls.activate.state = active
+    end
+  end
   build.itemsTab:AddUndoState()
   build.buildFlag = true
   M.get_main_output()
@@ -1629,6 +2579,224 @@ function M.get_items()
   -- Prefer orderedSlots for deterministic order
   local ordered = itemsTab.orderedSlots or {}
   local seen = {}
+  local addedItemIds = {}
+  local function append_item(slotName, itemId, activeSlotName)
+    if not itemId or itemId <= 0 or addedItemIds[itemId] then return nil end
+    local it = itemsTab.items[itemId]
+    if not it then return nil end
+
+    local entry = {
+      slot = slotName,
+      id = itemId,
+      name = it.name,
+      baseName = it.baseName,
+      type = it.type,
+      rarity = it.rarity,
+      raw = it.raw,
+      -- Jewel radius metadata (used for Thread of Hope / Timeless rendering)
+      jewelRadiusLabel = it.jewelRadiusLabel,
+      jewelRadiusIndex = it.jewelRadiusIndex,
+      -- Item metadata
+      itemLevel = it.itemLevel,
+      quality = it.quality,
+      -- Item flags
+      corrupted = it.corrupted or false,
+      mirrored = it.mirrored or false,
+      fractured = it.fractured or false,
+      synthesised = it.synthesised or false,
+      split = it.split or false,
+      veiled = it.veiled or false,
+      -- Influence flags
+      shaperItem = it.shaperItem or false,
+      elderItem = it.elderItem or false,
+      crusaderItem = it.crusaderItem or false,
+      redeemerItem = it.redeemerItem or false,
+      hunterItem = it.hunterItem or false,
+      warlordItem = it.warlordItem or false,
+    }
+
+    -- Affix data (prefix/suffix mod IDs and ranges)
+    entry.prefixes = {}
+    if it.prefixes then
+      for _, p in ipairs(it.prefixes) do
+        if p.modId and p.modId ~= "None" then
+          table.insert(entry.prefixes, {
+            modId = p.modId,
+            range = p.range
+          })
+        end
+      end
+    end
+    entry.suffixes = {}
+    if it.suffixes then
+      for _, s in ipairs(it.suffixes) do
+        if s.modId and s.modId ~= "None" then
+          table.insert(entry.suffixes, {
+            modId = s.modId,
+            range = s.range
+          })
+        end
+      end
+    end
+
+    -- Affix counts and limits
+    entry.prefixCount = #entry.prefixes
+    entry.suffixCount = #entry.suffixes
+    -- Most rare items have 3 prefix/suffix slots, but some bases differ
+    -- For now, use standard limits (can be enhanced later with base-specific data)
+    if it.rarity == "RARE" or it.rarity == "MAGIC" then
+      entry.maxPrefixes = it.rarity == "MAGIC" and 1 or 3
+      entry.maxSuffixes = it.rarity == "MAGIC" and 1 or 3
+    end
+
+    -- Structured mod lines
+    entry.implicitMods = {}
+    if it.implicitModLines then
+      for _, modLine in ipairs(it.implicitModLines) do
+        local mod = extractModLine(modLine)
+        if mod then
+          table.insert(entry.implicitMods, mod)
+        else
+          -- Debug: Log skipped mods for unique items
+          if it.rarity == "UNIQUE" or it.rarity == "RELIC" then
+            print("[BuildOps] Skipped implicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
+          end
+        end
+      end
+    end
+
+    entry.explicitMods = {}
+    if it.explicitModLines then
+      for _, modLine in ipairs(it.explicitModLines) do
+        local mod = extractModLine(modLine)
+        if mod then
+          table.insert(entry.explicitMods, mod)
+        else
+          -- Debug: Log skipped mods for unique items
+          if it.rarity == "UNIQUE" or it.rarity == "RELIC" then
+            print("[BuildOps] Skipped explicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
+          end
+        end
+      end
+    end
+
+    entry.enchantMods = {}
+    if it.enchantModLines then
+      for _, modLine in ipairs(it.enchantModLines) do
+        local mod = extractModLine(modLine)
+        if mod then table.insert(entry.enchantMods, mod) end
+      end
+    end
+
+    entry.scourgeMods = {}
+    if it.scourgeModLines then
+      for _, modLine in ipairs(it.scourgeModLines) do
+        local mod = extractModLine(modLine)
+        if mod then table.insert(entry.scourgeMods, mod) end
+      end
+    end
+
+    entry.crucibleMods = {}
+    if it.crucibleModLines then
+      for _, modLine in ipairs(it.crucibleModLines) do
+        local mod = extractModLine(modLine)
+        if mod then table.insert(entry.crucibleMods, mod) end
+      end
+    end
+
+    -- Catalyst info
+    if it.catalyst then
+      local catalystNames = {"Abrasive", "Accelerating", "Fertile", "Imbued", "Intrinsic", "Noxious", "Prismatic", "Tempering", "Turbulent", "Unstable"}
+      entry.catalyst = catalystNames[it.catalyst]
+      entry.catalystQuality = it.catalystQuality or 20
+    end
+
+    -- Requirements (use modified values that account for requirement-reducing mods,
+    -- matching what CalcSetup uses for env.requirementsTableItems)
+    if it.requirements then
+      local strReq = it.requirements.strMod or it.requirements.str or 0
+      local dexReq = it.requirements.dexMod or it.requirements.dex or 0
+      local intReq = it.requirements.intMod or it.requirements.int or 0
+      entry.requirements = {
+        level = it.requirements.level,
+        str = strReq > 0 and strReq or nil,
+        dex = dexReq > 0 and dexReq or nil,
+        int = intReq > 0 and intReq or nil,
+      }
+    end
+
+    -- Sockets
+    if it.sockets and #it.sockets > 0 then
+      entry.sockets = {}
+      for _, socket in ipairs(it.sockets) do
+        table.insert(entry.sockets, {
+          color = socket.color,
+          group = socket.group
+        })
+      end
+    end
+
+    -- Defense stats (armour, evasion, energy shield, ward)
+    if it.armourData then
+      entry.armourData = {
+        armour = it.armourData.Armour,
+        evasion = it.armourData.Evasion,
+        energyShield = it.armourData.EnergyShield,
+        ward = it.armourData.Ward,
+      }
+    end
+
+    -- Weapon stats (physical/elemental/chaos damage, crit, APS, DPS)
+    if it.weaponData then
+      -- Determine slotNum from slot name: "Weapon 2"/"Weapon 2 Swap" → 2, else 1
+      local slotNum = (slotName and slotName:match("Weapon 2")) and 2 or 1
+      local wd = it.weaponData[slotNum]
+      if wd then
+        entry.weaponData = {
+          physicalMin = wd.PhysicalMin,
+          physicalMax = wd.PhysicalMax,
+          physicalDPS = wd.PhysicalDPS,
+          elementalDPS = wd.ElementalDPS,
+          chaosDPS = wd.ChaosDPS,
+          totalDPS = wd.TotalDPS,
+          critChance = wd.CritChance,
+          attackRate = wd.AttackRate,
+          range = wd.range,
+          -- Elemental breakdown
+          fireMin = wd.FireMin, fireMax = wd.FireMax,
+          coldMin = wd.ColdMin, coldMax = wd.ColdMax,
+          lightningMin = wd.LightningMin, lightningMax = wd.LightningMax,
+          chaosMin = wd.ChaosMin, chaosMax = wd.ChaosMax,
+        }
+      end
+    end
+
+    -- Flask recovery stats (life, mana, duration, charges)
+    if it.flaskData then
+      entry.flaskData = {
+        lifeTotal = it.flaskData.lifeTotal,
+        lifeGradual = it.flaskData.lifeGradual,
+        lifeInstant = it.flaskData.lifeInstant,
+        manaTotal = it.flaskData.manaTotal,
+        manaGradual = it.flaskData.manaGradual,
+        manaInstant = it.flaskData.manaInstant,
+        duration = it.flaskData.duration,
+        chargesMax = it.flaskData.chargesMax,
+        chargesUsed = it.flaskData.chargesUsed,
+        instantPerc = it.flaskData.instantPerc,
+      }
+    end
+
+    -- Flask/Tincture activation flag stored in activeItemSet
+    local set = itemsTab.activeItemSet
+    if activeSlotName and set and set[activeSlotName] and set[activeSlotName].active ~= nil then
+      entry.active = set[activeSlotName].active and true or false
+    end
+
+    table.insert(result, entry)
+    addedItemIds[itemId] = true
+    return entry
+  end
   local function add_slot(slotName)
     if seen[slotName] then return end
     seen[slotName] = true
@@ -1637,188 +2805,15 @@ function M.get_items()
     local selId = slotCtrl.selItemId or 0
     -- Only include slots with equipped items
     if selId > 0 then
-      local it = itemsTab.items[selId]
-      if it then
-        local entry = {
-          slot = slotName,
-          id = selId,
-          name = it.name,
-          baseName = it.baseName,
-          type = it.type,
-          rarity = it.rarity,
-          raw = it.raw,
-          -- Jewel radius metadata (used for Thread of Hope / Timeless rendering)
-          jewelRadiusLabel = it.jewelRadiusLabel,
-          jewelRadiusIndex = it.jewelRadiusIndex,
-          -- Item metadata
-          itemLevel = it.itemLevel,
-          quality = it.quality,
-          -- Item flags
-          corrupted = it.corrupted or false,
-          mirrored = it.mirrored or false,
-          fractured = it.fractured or false,
-          synthesised = it.synthesised or false,
-          split = it.split or false,
-          veiled = it.veiled or false,
-          -- Influence flags
-          shaperItem = it.shaperItem or false,
-          elderItem = it.elderItem or false,
-          crusaderItem = it.crusaderItem or false,
-          redeemerItem = it.redeemerItem or false,
-          hunterItem = it.hunterItem or false,
-          warlordItem = it.warlordItem or false,
-        }
-
-        -- Affix data (prefix/suffix mod IDs and ranges)
-        entry.prefixes = {}
-        if it.prefixes then
-          for _, p in ipairs(it.prefixes) do
-            if p.modId and p.modId ~= "None" then
-              table.insert(entry.prefixes, {
-                modId = p.modId,
-                range = p.range
-              })
-            end
-          end
-        end
-        entry.suffixes = {}
-        if it.suffixes then
-          for _, s in ipairs(it.suffixes) do
-            if s.modId and s.modId ~= "None" then
-              table.insert(entry.suffixes, {
-                modId = s.modId,
-                range = s.range
-              })
-            end
-          end
-        end
-
-        -- Affix counts and limits
-        entry.prefixCount = #entry.prefixes
-        entry.suffixCount = #entry.suffixes
-        -- Most rare items have 3 prefix/suffix slots, but some bases differ
-        -- For now, use standard limits (can be enhanced later with base-specific data)
-        if it.rarity == "RARE" or it.rarity == "MAGIC" then
-          entry.maxPrefixes = it.rarity == "MAGIC" and 1 or 3
-          entry.maxSuffixes = it.rarity == "MAGIC" and 1 or 3
-        end
-
-        -- Structured mod lines
-        entry.implicitMods = {}
-        if it.implicitModLines then
-          for _, modLine in ipairs(it.implicitModLines) do
-            local mod = extractModLine(modLine)
-            if mod then
-              table.insert(entry.implicitMods, mod)
-            else
-              -- Debug: Log skipped mods for unique items
-              if it.rarity == "UNIQUE" then
-                print("[BuildOps] Skipped implicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
-              end
-            end
-          end
-        end
-
-        entry.explicitMods = {}
-        if it.explicitModLines then
-          for _, modLine in ipairs(it.explicitModLines) do
-            local mod = extractModLine(modLine)
-            if mod then
-              table.insert(entry.explicitMods, mod)
-            else
-              -- Debug: Log skipped mods for unique items
-              if it.rarity == "UNIQUE" then
-                print("[BuildOps] Skipped explicit mod for " .. (it.name or "unknown") .. ": line=" .. tostring(modLine.line))
-              end
-            end
-          end
-        end
-
-        entry.enchantMods = {}
-        if it.enchantModLines then
-          for _, modLine in ipairs(it.enchantModLines) do
-            local mod = extractModLine(modLine)
-            if mod then table.insert(entry.enchantMods, mod) end
-          end
-        end
-
-        entry.scourgeMods = {}
-        if it.scourgeModLines then
-          for _, modLine in ipairs(it.scourgeModLines) do
-            local mod = extractModLine(modLine)
-            if mod then table.insert(entry.scourgeMods, mod) end
-          end
-        end
-
-        entry.crucibleMods = {}
-        if it.crucibleModLines then
-          for _, modLine in ipairs(it.crucibleModLines) do
-            local mod = extractModLine(modLine)
-            if mod then table.insert(entry.crucibleMods, mod) end
-          end
-        end
-
-        -- Catalyst info
-        if it.catalyst then
-          local catalystNames = {"Abrasive", "Accelerating", "Fertile", "Imbued", "Intrinsic", "Noxious", "Prismatic", "Tempering", "Turbulent", "Unstable"}
-          entry.catalyst = catalystNames[it.catalyst]
-          entry.catalystQuality = it.catalystQuality or 20
-        end
-
-        -- Requirements
-        if it.requirements then
-          entry.requirements = {
-            level = it.requirements.level,
-            str = it.requirements.str > 0 and it.requirements.str or nil,
-            dex = it.requirements.dex > 0 and it.requirements.dex or nil,
-            int = it.requirements.int > 0 and it.requirements.int or nil,
-          }
-        end
-
-        -- Sockets
-        if it.sockets and #it.sockets > 0 then
-          entry.sockets = {}
-          for _, socket in ipairs(it.sockets) do
-            table.insert(entry.sockets, {
-              color = socket.color,
-              group = socket.group
-            })
-          end
-        end
-
-        -- Defense stats (armour, evasion, energy shield, ward)
-        if it.armourData then
-          entry.armourData = {
-            armour = it.armourData.Armour,
-            evasion = it.armourData.Evasion,
-            energyShield = it.armourData.EnergyShield,
-            ward = it.armourData.Ward,
-          }
-        end
-
-        -- Flask recovery stats (life, mana, duration, charges)
-        if it.flaskData then
-          entry.flaskData = {
-            lifeTotal = it.flaskData.lifeTotal,
-            lifeGradual = it.flaskData.lifeGradual,
-            lifeInstant = it.flaskData.lifeInstant,
-            manaTotal = it.flaskData.manaTotal,
-            manaGradual = it.flaskData.manaGradual,
-            manaInstant = it.flaskData.manaInstant,
-            duration = it.flaskData.duration,
-            chargesMax = it.flaskData.chargesMax,
-            chargesUsed = it.flaskData.chargesUsed,
-            instantPerc = it.flaskData.instantPerc,
-          }
-        end
-
-        -- Flask/Tincture activation flag stored in activeItemSet
-        local set = itemsTab.activeItemSet
-        if set and set[slotName] and set[slotName].active ~= nil then
-          entry.active = set[slotName].active and true or false
-        end
-        table.insert(result, entry)
-      end
+      append_item(slotName, selId, slotName)
+    end
+  end
+  -- DEBUG: Log orderedSlots flask entries
+  for i, slot in ipairs(ordered) do
+    if slot and slot.slotName and slot.slotName:find("Flask") then
+      local slotCtrl = itemsTab.slots[slot.slotName]
+      local selId = slotCtrl and slotCtrl.selItemId or 0
+      io.stderr:write(string.format("[get_items] orderedSlot[%d] slotName=%s selItemId=%d\n", i, slot.slotName, selId))
     end
   end
   for _, slot in ipairs(ordered) do
@@ -1826,7 +2821,107 @@ function M.get_items()
   end
   -- Add any remaining slots not in ordered list
   for slotName, _ in pairs(itemsTab.slots or {}) do add_slot(slotName) end
+  local spec = build.spec or {}
+  if spec.jewels then
+    for nodeId, itemId in pairs(spec.jewels) do
+      local entry = append_item("Jewel " .. tostring(nodeId), itemId, nil)
+      if entry then
+        entry.socketNodeId = tonumber(nodeId) or nodeId
+      end
+    end
+  end
   return result
+end
+
+-- Extract attribute requirement sources from PoB's authoritative requirementsTable.
+-- Must be called AFTER get_full_calcs() which triggers BuildOutput() and populates mainEnv.
+-- Returns per-attribute sources matching what PoB internally uses for ReqStr/ReqDex/ReqInt.
+function M.get_attribute_requirements()
+  if not build or not build.calcsTab then return nil, 'build not initialized' end
+  local mainEnv = build.calcsTab.mainEnv
+  if not mainEnv then
+    return nil, 'calculations not available (call get_full_calcs first)'
+  end
+
+  local mainOutput = build.calcsTab.mainOutput or {}
+
+  -- Build per-attribute source lists from the authoritative requirementsTable
+  local reqTable = {}
+  -- Merge items and gems tables (same structure CalcPerform uses)
+  if mainEnv.requirementsTableItems then
+    for _, entry in ipairs(mainEnv.requirementsTableItems) do
+      t_insert(reqTable, entry)
+    end
+  end
+  if mainEnv.requirementsTableGems then
+    for _, entry in ipairs(mainEnv.requirementsTableGems) do
+      t_insert(reqTable, entry)
+    end
+  end
+  -- Also check the merged table if it exists
+  if #reqTable == 0 and mainEnv.requirementsTable then
+    reqTable = mainEnv.requirementsTable
+  end
+
+  local sources = { str = {}, dex = {}, int = {} }
+
+  for _, reqSource in ipairs(reqTable) do
+    for _, attr in ipairs({"Str", "Dex", "Int"}) do
+      local val = reqSource[attr]
+      if val and val > 0 then
+        local entry = { requirement = val }
+        if reqSource.source == "Item" then
+          entry.type = "item"
+          if reqSource.sourceItem then
+            entry.name = reqSource.sourceItem.name or "Unknown Item"
+          else
+            entry.name = "Unknown Item"
+          end
+          entry.slot = reqSource.sourceSlot or "Unknown"
+        elseif reqSource.source == "Gem" then
+          entry.type = "gem"
+          if reqSource.sourceGem then
+            entry.name = reqSource.sourceGem.nameSpec or "Unknown Gem"
+          else
+            entry.name = "Unknown Gem"
+          end
+          -- Try to find the slot from the gem's socket group
+          entry.slot = "Gem"
+        else
+          entry.type = "unknown"
+          entry.name = "Unknown"
+          entry.slot = "Unknown"
+        end
+        t_insert(sources[attr:lower()], entry)
+      end
+    end
+  end
+
+  -- Check for special flags that affect requirement interpretation
+  local modDB = mainEnv.modDB
+  local ignoreAttrReq = modDB and modDB:Flag(nil, "IgnoreAttributeRequirements") or false
+  local omniRequirements = modDB and modDB:Flag(nil, "OmniscienceRequirements") or false
+
+  return {
+    str = {
+      current = mainOutput.Str or 0,
+      required = mainOutput.ReqStr or 0,
+      sources = sources.str,
+    },
+    dex = {
+      current = mainOutput.Dex or 0,
+      required = mainOutput.ReqDex or 0,
+      sources = sources.dex,
+    },
+    int = {
+      current = mainOutput.Int or 0,
+      required = mainOutput.ReqInt or 0,
+      sources = sources.int,
+    },
+    -- Flags that affect requirement interpretation
+    ignoreAttrReq = ignoreAttrReq or nil,  -- Supreme Ostentation: all requirements ignored
+    omniRequirements = omniRequirements or nil,  -- Crystallised Omniscience: requirements converted to Omni
+  }
 end
 
 
@@ -1891,14 +2986,21 @@ function M.add_gem(params)
     qualityId = params.qualityId or 'Default',
     enabled = params.enabled ~= false,
     enableGlobal1 = true,
-    enableGlobal2 = false,
+    enableGlobal2 = true,
     count = tonumber(params.count) or 1,
   }
 
-  -- Try to find gem data
+  -- Try to find gem data (handle with/without " Support" suffix mismatch)
+  local altNameSpec = nil
+  if gemInstance.nameSpec:sub(-8) == " Support" then
+    altNameSpec = gemInstance.nameSpec:sub(1, -9)
+  else
+    altNameSpec = gemInstance.nameSpec .. " Support"
+  end
   if build.data and build.data.gems then
     for _, gemData in pairs(build.data.gems) do
-      if gemData.name == gemInstance.nameSpec or gemData.nameSpec == gemInstance.nameSpec then
+      if gemData.name == gemInstance.nameSpec or gemData.nameSpec == gemInstance.nameSpec
+         or gemData.name == altNameSpec or gemData.nameSpec == altNameSpec then
         gemInstance.gemId = gemData.id
         if gemData.grantedEffect then
           gemInstance.skillId = gemData.grantedEffect.id
@@ -2104,11 +3206,11 @@ function M.search_nodes(params)
     -- Filter by node type if specified
     if nodeType then
       local nType = 'normal'
-      if node.isKeystone then nType = 'keystone'
+      if node.ascendancyName then nType = 'ascendancy'
+      elseif node.isKeystone then nType = 'keystone'
       elseif node.isNotable then nType = 'notable'
       elseif node.isJewelSocket then nType = 'jewel'
       elseif node.isMultipleChoiceOption then nType = 'mastery'
-      elseif node.ascendancyName then nType = 'ascendancy'
       end
       if nType ~= nodeType then goto continue end
     end
@@ -2142,11 +3244,11 @@ function M.search_nodes(params)
 
     if matches then
       local nodeType = 'normal'
-      if node.isKeystone then nodeType = 'keystone'
+      if node.ascendancyName then nodeType = 'ascendancy'
+      elseif node.isKeystone then nodeType = 'keystone'
       elseif node.isNotable then nodeType = 'notable'
       elseif node.isJewelSocket then nodeType = 'jewel'
       elseif node.isMultipleChoiceOption then nodeType = 'mastery'
-      elseif node.ascendancyName then nodeType = 'ascendancy'
       end
 
       local stats = {}
@@ -2688,13 +3790,27 @@ function M.set_skill_config(params)
   local input = build.configTab.input or {}
   build.configTab.input = input
 
-  -- Set the config variable directly
+  -- Set the config variable directly.
+  -- When value is 0 for "count" type configs, also clear the placeholder.
+  -- BuildModList skips input[var] when it's 0 (for non-countAllowZero types)
+  -- and falls through to placeholder[var], which may have a non-zero auto-calculated
+  -- value. Clearing the placeholder ensures value=0 truly disables the config.
   input[params.varName] = params.value
+  if params.value == 0 then
+    local placeholder = build.configTab.configSets
+      and build.configTab.configSets[build.configTab.activeConfigSetId]
+      and build.configTab.configSets[build.configTab.activeConfigSetId].placeholder
+    if placeholder then
+      placeholder[params.varName] = nil
+    end
+  end
 
   -- Rebuild mod list and recalculate
   if build.configTab.BuildModList then
     build.configTab:BuildModList()
   end
+  -- Wipe GlobalCache so BuildOutput() recalculates with updated config
+  build.buildFlag = true
   M.get_main_output()
 
   return { ok = true, varName = params.varName, value = params.value }
@@ -2714,9 +3830,17 @@ function M.set_batch_skill_config(params)
   build.configTab.input = input
   local applied = {}
 
+  local placeholder = build.configTab.configSets
+    and build.configTab.configSets[build.configTab.activeConfigSetId]
+    and build.configTab.configSets[build.configTab.activeConfigSetId].placeholder
+
   for _, entry in ipairs(params.configs) do
     if type(entry.varName) == 'string' and entry.varName ~= '' and entry.value ~= nil then
       input[entry.varName] = entry.value
+      -- Clear placeholder when value=0 so BuildModList doesn't fall back to it
+      if entry.value == 0 and placeholder then
+        placeholder[entry.varName] = nil
+      end
       applied[#applied + 1] = { varName = entry.varName, value = entry.value }
     end
   end
@@ -2726,6 +3850,8 @@ function M.set_batch_skill_config(params)
     if build.configTab.BuildModList then
       build.configTab:BuildModList()
     end
+    -- Wipe GlobalCache so BuildOutput() recalculates with updated config
+    build.buildFlag = true
     M.get_main_output()
   end
 
@@ -2827,6 +3953,100 @@ function M.get_jewel_sockets()
   table.sort(result, function(a, b) return a.nodeId < b.nodeId end)
 
   return result
+end
+
+-- Debug helper: inspect the live passive node state PoB is using for a specific node.
+-- params: { nodeId: number }
+function M.get_tree_node_debug(params)
+  if not build or not build.spec then
+    return nil, "build/spec not initialized"
+  end
+  if type(params) ~= "table" then
+    return nil, "invalid params"
+  end
+
+  local nodeId = tonumber(params.nodeId)
+  if not nodeId then
+    return nil, "missing or invalid nodeId"
+  end
+
+  local spec = build.spec
+  local function summarizeNode(node)
+    if not node then
+      return nil
+    end
+
+    local stats = {}
+    if type(node.sd) == "table" then
+      for _, stat in ipairs(node.sd) do
+        if type(stat) == "string" then
+          table.insert(stats, stat)
+        end
+      end
+    end
+
+    local conqueredBy = nil
+    if type(node.conqueredBy) == "table" then
+      conqueredBy = {
+        id = node.conqueredBy.id,
+        conqueror = node.conqueredBy.conqueror and {
+          type = node.conqueredBy.conqueror.type,
+          id = node.conqueredBy.conqueror.id,
+        } or nil,
+      }
+    end
+
+    return {
+      id = node.id,
+      dn = node.dn,
+      name = node.name,
+      icon = node.icon,
+      activeEffectImage = node.activeEffectImage,
+      type = node.type,
+      alloc = node.alloc == true,
+      isKeystone = node.isKeystone == true,
+      isNotable = node.isNotable == true,
+      stats = stats,
+      reminderText = node.reminderText,
+      conqueredBy = conqueredBy,
+    }
+  end
+
+  local influencingJewels = {}
+  for socketNodeId, itemId in pairs(spec.jewels or {}) do
+    local item = build.itemsTab and build.itemsTab.items and build.itemsTab.items[itemId] or nil
+    local socketNode = spec.nodes[socketNodeId]
+    local radiusIndex = item and item.jewelRadiusIndex or nil
+    local inRadius = false
+
+    if socketNode and socketNode.nodesInRadius and radiusIndex and socketNode.nodesInRadius[radiusIndex] then
+      inRadius = socketNode.nodesInRadius[radiusIndex][nodeId] ~= nil
+    end
+
+    if inRadius or socketNodeId == nodeId then
+      table.insert(influencingJewels, {
+        socketNodeId = socketNodeId,
+        itemId = itemId,
+        name = item and item.name or nil,
+        baseName = item and item.baseName or nil,
+        radiusIndex = radiusIndex,
+        jewelData = item and item.jewelData and {
+          conqueredBy = item.jewelData.conqueredBy,
+          timelessJewel = item.jewelData.conqueredBy ~= nil,
+          impossibleEscapeKeystone = item.jewelData.impossibleEscapeKeystone,
+          intuitiveLeapLike = item.jewelData.intuitiveLeapLike == true,
+        } or nil,
+      })
+    end
+  end
+
+  return {
+    nodeId = nodeId,
+    specNode = summarizeNode(spec.nodes and spec.nodes[nodeId] or nil),
+    allocNode = summarizeNode(spec.allocNodes and spec.allocNodes[nodeId] or nil),
+    treeNode = summarizeNode(spec.tree and spec.tree.nodes and spec.tree.nodes[nodeId] or nil),
+    influencingJewels = influencingJewels,
+  }
 end
 
 -- Equip a jewel to a tree socket
@@ -3046,15 +4266,17 @@ function M.get_nodes_in_radius(params)
     }
 
     for nodeIdInRadius, node in pairs(nodesInThisRadius) do
+      local liveNode = (spec.nodes and spec.nodes[nodeIdInRadius]) or (spec.allocNodes and spec.allocNodes[nodeIdInRadius]) or node
+
       -- Determine node type
       local nodeType = "normal"
-      if node.isKeystone then
+      if liveNode.isKeystone then
         nodeType = "keystone"
-      elseif node.isNotable then
+      elseif liveNode.isNotable then
         nodeType = "notable"
-      elseif node.isJewelSocket then
+      elseif liveNode.isJewelSocket then
         nodeType = "jewel"
-      elseif node.isMastery then
+      elseif liveNode.isMastery then
         nodeType = "mastery"
       end
 
@@ -3063,20 +4285,23 @@ function M.get_nodes_in_radius(params)
 
       -- Get node stats
       local stats = {}
-      if node.sd then
-        for _, stat in ipairs(node.sd) do
+      if liveNode.sd then
+        for _, stat in ipairs(liveNode.sd) do
           table.insert(stats, stat)
         end
       end
 
       table.insert(radiusResult.nodes, {
         id = nodeIdInRadius,
-        name = node.dn or node.name or "Unknown",
+        name = liveNode.dn or liveNode.name or "Unknown",
         type = nodeType,
         isAllocated = isAllocated,
         stats = stats,
-        x = node.x,
-        y = node.y,
+        icon = liveNode.icon,
+        activeEffectImage = liveNode.activeEffectImage,
+        reminderText = liveNode.reminderText,
+        x = liveNode.x,
+        y = liveNode.y,
       })
     end
 
@@ -3103,6 +4328,158 @@ function M.get_nodes_in_radius(params)
     socketY = socketNode.y,
     radii = results,
   }
+end
+
+-- Get flask uptime data for all equipped flasks
+-- Mirrors the uptime calculation from ItemsTab.lua tooltip (lines ~3754-3938)
+function M.get_flask_uptime_data()
+  if not build or not build.itemsTab then return nil, 'items not initialized' end
+  if not build.calcsTab or not build.calcsTab.mainEnv then return nil, 'calcs not initialized' end
+
+  local itemsTab = build.itemsTab
+  local modDB = build.calcsTab.mainEnv.modDB
+  local calcOutput = build.calcsTab.mainOutput
+  if not modDB or not calcOutput then return nil, 'modDB or output not available' end
+
+  local m_min = math.min
+  local m_floor = math.floor
+  local result = {}
+
+  for idx = 1, NUM_FLASK_SLOTS do
+    local slotName = 'Flask ' .. tostring(idx)
+    local slotCtrl = itemsTab.slots[slotName]
+    if slotCtrl and slotCtrl.selItemId and slotCtrl.selItemId > 0 then
+      local item = itemsTab.items[slotCtrl.selItemId]
+      if item and item.base and item.base.flask and item.flaskData then
+        local ok2, entry = pcall(function()
+          local flaskData = item.flaskData
+          local durInc = modDB:Sum("INC", nil, "FlaskDuration")
+          local effectInc = modDB:Sum("INC", { actor = "player" }, "FlaskEffect")
+
+          if item.rarity == "MAGIC" and not item.base.flask.life and not item.base.flask.mana then
+            effectInc = effectInc + modDB:Sum("INC", { actor = "player" }, "MagicUtilityFlaskEffect")
+          end
+
+          -- Effective charges used
+          local usedInc = modDB:Sum("INC", nil, "FlaskChargesUsed")
+          local flaskChargesUsed = flaskData.chargesUsed * (1 + usedInc / 100)
+          local maxUses = flaskChargesUsed > 0 and m_floor(flaskData.chargesMax / flaskChargesUsed) or 0
+
+          -- Charge gain modifier
+          local gainMod = flaskData.gainMod * (1 + modDB:Sum("INC", nil, "FlaskChargesGained") / 100)
+
+          -- Charge generation per second
+          local chargesGenerated = modDB:Sum("BASE", nil, "FlaskChargesGenerated")
+          if item.base.flask.life then
+            chargesGenerated = chargesGenerated + modDB:Sum("BASE", nil, "LifeFlaskChargesGenerated")
+          end
+          if item.base.flask.mana then
+            chargesGenerated = chargesGenerated + modDB:Sum("BASE", nil, "ManaFlaskChargesGenerated")
+          end
+          if not item.base.flask.mana and not item.base.flask.life then
+            chargesGenerated = chargesGenerated + modDB:Sum("BASE", nil, "UtilityFlaskChargesGenerated")
+          end
+
+          -- Per-empty-flask charge generation
+          local chargesGeneratedPerFlask = modDB:Sum("BASE", nil, "FlaskChargesGeneratedPerEmptyFlask")
+          local emptyFlaskSlots = 0
+          for sName, slot in pairs(itemsTab.slots) do
+            if sName:find("^Flask") ~= nil and slot.selItemId == 0 then
+              emptyFlaskSlots = emptyFlaskSlots + 1
+            end
+          end
+          chargesGeneratedPerFlask = chargesGeneratedPerFlask * emptyFlaskSlots
+          chargesGenerated = chargesGenerated * gainMod
+          chargesGeneratedPerFlask = chargesGeneratedPerFlask * gainMod
+          local totalChargesGenerated = chargesGenerated + chargesGeneratedPerFlask
+
+          -- Chance to not consume charges
+          local chanceToNotConsumeCharges = m_min(modDB:Sum("BASE", nil, "FlaskChanceNotConsumeCharges"), 100)
+
+          -- Flask uptime calculation (mirrors ItemsTab.lua logic)
+          local hasUptime = not item.base.flask.life and not item.base.flask.mana
+          local flaskDuration = flaskData.duration * (1 + durInc / 100)
+
+          -- Life/mana flask duration needs rateInc adjustment
+          local rateInc = 0
+          if item.base.flask.life or item.base.flask.mana then
+            rateInc = modDB:Sum("INC", nil, "FlaskRecoveryRate")
+          end
+
+          local lifeDur = 0
+          local manaDur = 0
+          if item.base.flask.life then
+            local lifeRateInc = modDB:Sum("INC", nil, "FlaskLifeRecoveryRate")
+            lifeDur = flaskData.duration * (1 + durInc / 100) / (1 + rateInc / 100) / (1 + lifeRateInc / 100)
+            if flaskData.lifeEffectNotRemoved or modDB:Flag(nil, "LifeFlaskEffectNotRemoved") then
+              hasUptime = true
+              flaskDuration = lifeDur
+            end
+          elseif item.base.flask.mana then
+            local manaRateInc = modDB:Sum("INC", nil, "FlaskManaRecoveryRate")
+            manaDur = flaskData.duration * (1 + durInc / 100) / (1 + rateInc / 100) / (1 + manaRateInc / 100)
+            if flaskData.manaEffectNotRemoved or modDB:Flag(nil, "ManaFlaskEffectNotRemoved") then
+              hasUptime = true
+              flaskDuration = manaDur
+            end
+          end
+
+          local percentageMin = nil
+          local percentageAvg = nil
+
+          if hasUptime and flaskChargesUsed > 0 and flaskDuration > 0 then
+            local per3Duration = flaskDuration - (flaskDuration % 3)
+            local per5Duration = flaskDuration - (flaskDuration % 5)
+            local minimumChargesGenerated = per3Duration * chargesGenerated + per5Duration * chargesGeneratedPerFlask
+            percentageMin = m_min(minimumChargesGenerated / flaskChargesUsed * 100, 100)
+
+            if percentageMin < 100 and chanceToNotConsumeCharges < 100 then
+              local averageChargesGenerated = (chargesGenerated + chargesGeneratedPerFlask) * flaskDuration
+              local averageChargesUsed = flaskChargesUsed * (100 - chanceToNotConsumeCharges) / 100
+              percentageAvg = m_min(averageChargesGenerated / averageChargesUsed * 100, 100)
+            else
+              percentageMin = 100
+              percentageAvg = 100
+            end
+          end
+
+          local effectMod = 1 + (flaskData.effectInc + effectInc) / 100
+
+          return {
+            slot = idx,
+            name = item.name or "Unknown",
+            baseName = item.baseName or item.name or "Unknown",
+            isLifeFlask = item.base.flask.life and true or false,
+            isManaFlask = item.base.flask.mana and true or false,
+            isUtility = (not item.base.flask.life and not item.base.flask.mana) and true or false,
+            duration = flaskDuration,
+            chargesMax = flaskData.chargesMax,
+            chargesUsed = m_floor(flaskChargesUsed),
+            maxUses = maxUses,
+            chargesGeneratedPerSec = totalChargesGenerated,
+            chanceToNotConsume = chanceToNotConsumeCharges,
+            effectModifier = effectMod,
+            gainModifier = gainMod,
+            hasUptime = hasUptime,
+            uptimeMin = percentageMin,
+            uptimeAvg = percentageAvg,
+          }
+        end)
+
+        if ok2 and entry then
+          t_insert(result, entry)
+        else
+          t_insert(result, {
+            slot = idx,
+            name = item.name or "Unknown",
+            error = not ok2 and tostring(entry) or "failed to compute uptime",
+          })
+        end
+      end
+    end
+  end
+
+  return result
 end
 
 return M
