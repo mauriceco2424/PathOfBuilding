@@ -296,6 +296,28 @@ function M.get_full_calcs()
     end
   end
 
+  -- Surface per-hand accuracy to top-level so build-context.ts can read it.
+  -- PoB calculates accuracy per weapon pass (MainHand/OffHand) in CalcOffence.lua,
+  -- storing it at mainOutput.MainHand.Accuracy / mainOutput.OffHand.Accuracy.
+  -- Without this, mainOutput.Accuracy is nil for attack builds.
+  if (not mainOutput.Accuracy or mainOutput.Accuracy == 0) then
+    local mh = mainOutput.MainHand
+    local oh = mainOutput.OffHand
+    if mh and type(mh) == "table" and mh.Accuracy and mh.Accuracy > 0 then
+      mainOutput.Accuracy = mh.Accuracy
+    elseif oh and type(oh) == "table" and oh.Accuracy and oh.Accuracy > 0 then
+      mainOutput.Accuracy = oh.Accuracy
+    end
+  end
+
+  -- Surface per-hand AccuracyHitChance too (in case top-level is missing)
+  if (not mainOutput.AccuracyHitChance or mainOutput.AccuracyHitChance == 0) then
+    local mh = mainOutput.MainHand
+    if mh and type(mh) == "table" and mh.AccuracyHitChance and mh.AccuracyHitChance > 0 then
+      mainOutput.AccuracyHitChance = mh.AccuracyHitChance
+    end
+  end
+
   -- Deep copy all outputs to JSON-serializable format
   local mainOutputCopied = deepCopySafe(mainOutput)
 
