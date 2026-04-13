@@ -3125,6 +3125,46 @@ function M.set_gem_quality(params)
   return true
 end
 
+-- Set whether a gem is enabled (destructive — persists until reload)
+-- params: { groupIndex: number, gemIndex: number, enabled: boolean }
+function M.set_gem_enabled(params)
+  if not build or not build.skillsTab then return nil, 'skills not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+  if not params.groupIndex or not params.gemIndex then
+    return nil, 'missing groupIndex or gemIndex'
+  end
+  if params.enabled == nil then return nil, 'missing enabled' end
+
+  local skillSetId = build.skillsTab.activeSkillSetId or 1
+  local skillSet = build.skillsTab.skillSets[skillSetId]
+  if not skillSet then return nil, 'active skill set not found' end
+
+  local groupIndex = tonumber(params.groupIndex)
+  local gemIndex = tonumber(params.gemIndex)
+
+  local socketGroup = skillSet.socketGroupList[groupIndex]
+  if not socketGroup then return nil, 'socket group not found at index ' .. tostring(groupIndex) end
+
+  local gemInstance = socketGroup.gemList and socketGroup.gemList[gemIndex]
+  if not gemInstance then return nil, 'gem not found at index ' .. tostring(gemIndex) end
+
+  gemInstance.enabled = params.enabled == true
+
+  if build.skillsTab.ProcessSocketGroup then
+    build.skillsTab:ProcessSocketGroup(socketGroup)
+  end
+
+  build.buildFlag = true
+  M.get_main_output()
+
+  return {
+    groupIndex = groupIndex,
+    gemIndex = gemIndex,
+    gemName = gemInstance.nameSpec,
+    enabled = gemInstance.enabled,
+  }
+end
+
 -- Remove a socket group
 -- params: { groupIndex: number }
 function M.remove_skill(params)

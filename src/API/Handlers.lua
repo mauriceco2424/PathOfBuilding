@@ -339,6 +339,12 @@ handlers.remove_skill = function(params)
   return { ok = true }
 end
 
+handlers.set_gem_enabled = function(params)
+  local res, err = BuildOps.set_gem_enabled(params or {})
+  if not res then return { ok = false, error = err or 'failed to set gem enabled state' } end
+  return { ok = true, gem = res }
+end
+
 handlers.remove_gem = function(params)
   local ok2, err = BuildOps.remove_gem(params or {})
   if not ok2 then return { ok = false, error = err or 'failed to remove gem' } end
