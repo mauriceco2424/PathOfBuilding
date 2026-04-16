@@ -431,6 +431,12 @@ handlers.set_jewel = function(params)
   return { ok = true, jewel = res }
 end
 
+handlers.set_cluster_chain = function(params)
+  local res, err = BuildOps.set_cluster_chain(params or {})
+  if not res then return { ok = false, error = err or 'failed to set cluster chain' } end
+  return { ok = true, result = res }
+end
+
 handlers.remove_jewel = function(params)
   local res, err = BuildOps.remove_jewel(params or {})
   if not res then return { ok = false, error = err or 'failed to remove jewel' } end
