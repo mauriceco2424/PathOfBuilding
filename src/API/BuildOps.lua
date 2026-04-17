@@ -497,14 +497,26 @@ function M.get_cluster_nodes()
   end
 
   local spec = build.spec
-  local function collectLinks(node)
+  -- Collect valid tree-viz links for a cluster subgraph node.
+  --
+  -- PoB's `node.linked` can include stale cross-tree references to
+  -- unrelated main-tree jewel sockets (observed 2026-04-16: cluster notable
+  -- 65618 linked to Watcher's Eye socket 12161 ~800 units away). Rendering
+  -- those produces long spurious "active" lines across the canvas.
+  --
+  -- A cluster node only legitimately links to: another cluster-id node
+  -- (id >= 0x10000, same subgraph or nested cluster's entrance) or its own
+  -- parent socket. Everything else is dropped.
+  local function collectLinks(node, parentSocketId)
     local links = {}
     local seen = {}
     if node and node.linked then
       for _, linkedNode in ipairs(node.linked) do
         if linkedNode and linkedNode.id and not seen[linkedNode.id] then
-          seen[linkedNode.id] = true
-          table.insert(links, linkedNode.id)
+          if linkedNode.id >= 0x10000 or linkedNode.id == parentSocketId then
+            seen[linkedNode.id] = true
+            table.insert(links, linkedNode.id)
+          end
         end
       end
     end
@@ -597,7 +609,7 @@ function M.get_cluster_nodes()
             groupY = groupY,
             clusterSize = clusterSize,
             subgraphId = subGraphId,
-            links = collectLinks(node),
+            links = collectLinks(node, parentSocketId),
           }
         end
       end
@@ -1360,6 +1372,14 @@ function M.calc_with_jewel(params)
     end)
   end
 
+  -- Tracks every node allocated by this test (outer-socket travel + cluster
+  -- subgraph BFS path + notables + the socket itself when newly allocated).
+  -- Surfaced as `allocatedPathNodes` so the frontend visualization can show
+  -- the full impact of the cluster, not just notable IDs. Without it, the
+  -- "X added" diff badge undercounts (e.g. shows 3 notables when the real
+  -- cost is 4 travel + 2 smalls + 3 notables = 9 nodes).
+  local socketPathIds = {}
+
   -- 4. Execute the test in a pcall-protected block
   local ok, result = pcall(function()
     -- 4a. Allocate the host socket if not already allocated.
@@ -1380,12 +1400,22 @@ function M.calc_with_jewel(params)
         end
         for _, pathNode in ipairs(pathResult.path or {}) do
           if pathNode and pathNode.id then
-            newNodeSet[tonumber(pathNode.id)] = true
+            local pid = tonumber(pathNode.id)
+            newNodeSet[pid] = true
+            -- Only count nodes that weren't already allocated as "added" cost
+            if not savedAllocNodeKeys[pid] then
+              t_insert(socketPathIds, pid)
+            end
           end
         end
       end
 
       newNodeSet[nodeId] = true
+      -- The outer socket itself is also a new allocation if it wasn't already
+      if not savedAllocNodeKeys[nodeId] then
+        t_insert(socketPathIds, nodeId)
+      end
+
       local newNodes = {}
       for id, _ in pairs(newNodeSet) do t_insert(newNodes, id) end
       table.sort(newNodes)
@@ -1429,8 +1459,22 @@ function M.calc_with_jewel(params)
     build.buildFlag = true
     M.get_main_output()
 
-    -- 4e. Auto-allocate cluster notables if requested
+    -- 4e. Auto-allocate cluster notables if requested.
+    -- Tracks every node allocated by this test — used to surface the full
+    -- "what gets speced into the tree" list to the frontend visualization
+    -- (otherwise only notable IDs are returned and the cluster preview shows
+    -- 3 nodes instead of the real ~9 = travel + smalls + notables).
     local allocatedNotableIds = nil
+    local allocatedPathNodeIds = {}
+    local pathSeen = {}
+    local function recordPathNode(id)
+      if id and not pathSeen[id] then
+        pathSeen[id] = true
+        t_insert(allocatedPathNodeIds, id)
+      end
+    end
+    -- Seed with outer-socket travel path captured during step 4a.
+    for _, pid in ipairs(socketPathIds) do recordPathNode(pid) end
 
     if params.autoAllocateNotables then
       -- Find newly created nodes (cluster subgraph nodes added by the jewel)
@@ -1485,7 +1529,10 @@ function M.calc_with_jewel(params)
             end
 
             if found then
-              -- Trace path from notable back to socket and allocate all nodes
+              -- Trace path from notable back to socket and allocate all nodes.
+              -- Record EVERY node on this path (smalls + notable + intermediate
+              -- subgraph nodes) so the visualization can show the full cluster
+              -- spec, not just the notable endpoints.
               local pathId = notable.id
               while pathId and pathId ~= nodeId do
                 local pathNode = spec.nodes[pathId]
@@ -1493,6 +1540,7 @@ function M.calc_with_jewel(params)
                   pathNode.alloc = true
                   spec.allocNodes[pathId] = pathNode
                 end
+                recordPathNode(pathId)
                 pathId = parent[pathId]
               end
               t_insert(allocatedNotableIds, notable.id)
@@ -1512,6 +1560,7 @@ function M.calc_with_jewel(params)
             node.alloc = true
             spec.allocNodes[nid_num] = node
             t_insert(allocatedNotableIds, nid_num)
+            recordPathNode(nid_num)
           end
         end
       end
@@ -1531,10 +1580,79 @@ function M.calc_with_jewel(params)
     local aDPS = afterOutput and afterOutput.CombinedDPS or 0
     io.stderr:write(string.format("[calc_with_jewel] before CombinedDPS=%.1f  after CombinedDPS=%.1f  delta=%.1f\n", bDPS, aDPS, aDPS - bDPS))
 
+    -- 4h. Snapshot the cluster subgraph so the frontend can render the full
+    -- "wheel" for suggested cluster jewels (not yet equipped in the persisted
+    -- build). Without this, the tree viz only highlights the allocated IDs —
+    -- the unallocated small passives, mastery center, and internal ring
+    -- connections are invisible because vizData.tree.clusterNodes only lists
+    -- clusters actually equipped in the stored build.
+    --
+    -- Returns the same shape as M.get_cluster_nodes() so the frontend can
+    -- merge both arrays and reuse the existing cluster render path.
+    local clusterSubgraph = nil
+    if item.clusterJewel and spec.subGraphs then
+      local function collectSubgraphLinks(node, parentSocketId)
+        local links = {}
+        local seen = {}
+        if node and node.linked then
+          for _, linkedNode in ipairs(node.linked) do
+            if linkedNode and linkedNode.id and not seen[linkedNode.id] then
+              if linkedNode.id >= 0x10000 or linkedNode.id == parentSocketId then
+                seen[linkedNode.id] = true
+                t_insert(links, linkedNode.id)
+              end
+            end
+          end
+        end
+        table.sort(links)
+        return links
+      end
+
+      for _, subGraph in pairs(spec.subGraphs) do
+        if subGraph.parentSocket and subGraph.parentSocket.id == nodeId and subGraph.nodes then
+          clusterSubgraph = {}
+          local groupX = subGraph.group and subGraph.group.x or nil
+          local groupY = subGraph.group and subGraph.group.y or nil
+          local clusterSize = "Small"
+          for _, n in ipairs(subGraph.nodes) do
+            if n and n.type ~= "Mastery" and n.o ~= nil then
+              if n.o >= 3 then clusterSize = "Large"
+              elseif n.o >= 2 then clusterSize = "Medium"
+              else clusterSize = "Small" end
+              break
+            end
+          end
+          for _, n in ipairs(subGraph.nodes) do
+            t_insert(clusterSubgraph, {
+              id = n.id,
+              name = n.dn or "Unknown",
+              type = n.type or "Normal",
+              stats = n.sd or {},
+              icon = n.icon,
+              x = n.x,
+              y = n.y,
+              orbit = n.o,
+              orbitIndex = n.oidx,
+              isAllocated = spec.allocNodes[n.id] ~= nil,
+              socketNodeId = nodeId,
+              clusterSize = clusterSize,
+              groupX = groupX,
+              groupY = groupY,
+              links = collectSubgraphLinks(n, nodeId),
+            })
+          end
+          break
+        end
+      end
+    end
+
     return {
       beforeOutput = beforeOutput,
       afterOutput = afterOutput,
       allocatedNotables = allocatedNotableIds,
+      allocatedPathNodes = allocatedPathNodeIds,
+      pointCost = #allocatedPathNodeIds,
+      clusterSubgraph = clusterSubgraph,
     }
   end)
 
@@ -1720,6 +1838,11 @@ function M.calc_with_cluster_chain(params)
   end
 
   -- 4. Execute in pcall-protected block
+  -- Tracks every node allocated by this test (outer-socket travel + cluster
+  -- BFS path + notables). Surfaced as `allocatedPathNodes` so the visualization
+  -- can render the full cluster spec, not just notable endpoints.
+  local socketPathIds = {}
+
   local ok, result = pcall(function()
     -- 4a. Path to outer socket if needed
     if not spec.allocNodes[outerNodeId] then
@@ -1737,12 +1860,20 @@ function M.calc_with_cluster_chain(params)
         end
         for _, pathNode in ipairs(pathResult.path or {}) do
           if pathNode and pathNode.id then
-            newNodeSet[tonumber(pathNode.id)] = true
+            local pid = tonumber(pathNode.id)
+            newNodeSet[pid] = true
+            if not savedAllocNodeKeys[pid] then
+              t_insert(socketPathIds, pid)
+            end
           end
         end
       end
 
       newNodeSet[outerNodeId] = true
+      if not savedAllocNodeKeys[outerNodeId] then
+        t_insert(socketPathIds, outerNodeId)
+      end
+
       local newNodes = {}
       for id, _ in pairs(newNodeSet) do t_insert(newNodes, id) end
       table.sort(newNodes)
@@ -1884,6 +2015,16 @@ function M.calc_with_cluster_chain(params)
     -- 4f. Auto-allocate ALL notables across entire cluster chain
     local allocatedNotableIds = {}
     local totalPointCost = 0
+    local allocatedPathNodeIds = {}
+    local pathSeen = {}
+    local function recordPathNode(id)
+      if id and not pathSeen[id] then
+        pathSeen[id] = true
+        t_insert(allocatedPathNodeIds, id)
+      end
+    end
+    -- Seed with outer-socket travel path captured during step 4a.
+    for _, pid in ipairs(socketPathIds) do recordPathNode(pid) end
 
     if params.autoAllocateNotables then
       -- Find ALL cluster subgraph nodes (both new and rebuilt from replacement).
@@ -1960,6 +2101,7 @@ function M.calc_with_cluster_chain(params)
                   spec.allocNodes[pathId] = pathNode
                   totalPointCost = totalPointCost + 1
                 end
+                recordPathNode(pathId)
                 pathId = parent[pathId]
               end
               t_insert(allocatedNotableIds, notable.id)
@@ -1990,7 +2132,8 @@ function M.calc_with_cluster_chain(params)
       beforeOutput = beforeOutput,
       afterOutput = afterOutput,
       allocatedNotables = allocatedNotableIds,
-      totalPointCost = totalPointCost,
+      allocatedPathNodes = allocatedPathNodeIds,
+      totalPointCost = totalPointCost + #socketPathIds,
       nestedSocketsUsed = equippedMediums,
     }
   end)

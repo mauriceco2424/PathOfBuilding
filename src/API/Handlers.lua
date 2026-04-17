@@ -273,6 +273,9 @@ handlers.calc_with_jewel = function(params)
     beforeOutput = result.beforeOutput,
     afterOutput = result.afterOutput,
     allocatedNotables = result.allocatedNotables,
+    allocatedPathNodes = result.allocatedPathNodes,
+    pointCost = result.pointCost,
+    clusterSubgraph = result.clusterSubgraph,
   }
 end
 
@@ -285,6 +288,7 @@ handlers.calc_with_cluster_chain = function(params)
     beforeOutput = result.beforeOutput,
     afterOutput = result.afterOutput,
     allocatedNotables = result.allocatedNotables,
+    allocatedPathNodes = result.allocatedPathNodes,
     totalPointCost = result.totalPointCost,
     nestedSocketsUsed = result.nestedSocketsUsed,
   }
