@@ -283,6 +283,11 @@ function M.get_full_calcs()
         "PhysicalHitAverage", "FireHitAverage", "ColdHitAverage",
         "LightningHitAverage", "ChaosHitAverage",
         "FirePenetration", "ColdPenetration", "LightningPenetration", "ChaosPenetration",
+        -- Totem/ballista limits — per-skill in CalcOffence.lua (line 1383).
+        -- Without overlay, a build where mainSocketGroup points at a non-totem
+        -- utility skill (e.g. Ballistas of Skyforging selected as the damage
+        -- dealer but Precision owns mainSocketGroup) loses the totem cap.
+        "ActiveTotemLimit", "TotemsSummoned",
       }
       for _, field in ipairs(dpsFields) do
         if bestSkillOut[field] ~= nil then
@@ -318,6 +323,46 @@ function M.get_full_calcs()
     end
   end
 
+  -- Per-skill reservation breakdown. Fixes the case where the LLM sees a
+  -- total ReservedMana number but can't explain why a tree swap that lost
+  -- reservation efficiency broke mana so hard. Every active skill with
+  -- reservation contributes a row with its mana/life percent + flat cost.
+  -- Reads the post-CalcPerform values off activeSkill.skillData (set in
+  -- CalcPerform.lua lines 1881-1898). Oracle flagged this on 2026-04-16.
+  local perSkillReservation = {}
+  if mainEnv and mainEnv.player and mainEnv.player.activeSkillList then
+    for _, activeSkill in ipairs(mainEnv.player.activeSkillList) do
+      local sd = activeSkill.skillData
+      if sd then
+        local manaPercent = sd.ManaReservedPercent or 0
+        local manaFlat = sd.ManaReservedBase or 0
+        local lifePercent = sd.LifeReservedPercent or 0
+        local lifeFlat = sd.LifeReservedBase or 0
+        -- When ReservedPercent is set, ReservedBase also gets a computed
+        -- flat equivalent (mana * percent / 100). Distinguish "real" flat
+        -- reservations (percent == 0) from percent-derived ones so the
+        -- output isn't misleading.
+        local flatOnlyMana = manaPercent == 0 and manaFlat > 0
+        local flatOnlyLife = lifePercent == 0 and lifeFlat > 0
+        if manaPercent > 0 or lifePercent > 0 or flatOnlyMana or flatOnlyLife then
+          local skillName = nil
+          if activeSkill.activeEffect and activeSkill.activeEffect.grantedEffect then
+            skillName = activeSkill.activeEffect.grantedEffect.name
+          end
+          if skillName then
+            t_insert(perSkillReservation, {
+              name = skillName,
+              manaPercent = manaPercent,
+              manaFlat = flatOnlyMana and manaFlat or 0,
+              lifePercent = lifePercent,
+              lifeFlat = flatOnlyLife and lifeFlat or 0,
+            })
+          end
+        end
+      end
+    end
+  end
+
   -- Deep copy all outputs to JSON-serializable format
   local mainOutputCopied = deepCopySafe(mainOutput)
 
@@ -330,6 +375,7 @@ function M.get_full_calcs()
     skills = M.get_skills(),
     activeSkill = activeSkillName,
     perSkillDPS = perSkillDPS,
+    perSkillReservation = perSkillReservation,
   }
 
   return result
