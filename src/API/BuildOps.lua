@@ -126,6 +126,52 @@ function M._fixClusterJewelValid(item)
     or (item.jewelData.clusterJewelSocketCountOverride and item.jewelData.clusterJewelNothingnessCount)
 end
 
+-- Compute army DPS fields on a mainOutput table for minion builds.
+-- PoB only reports per-minion damage (mainOutput.Minion.CombinedDPS); the
+-- community convention is per-minion × active-minion-cap. Each minion skill
+-- has its own cap field (ActiveSpectreLimit, ActiveZombieLimit, etc.) keyed
+-- by minion.minionData.limit in Data/Minions.lua.
+--
+-- MUST be called on EVERY mainOutput returned to callers (get_full_calcs and
+-- all calc_with* variants — calc_with, calc_with_gems, calc_with_jewel,
+-- calc_with_cluster_chain). Forgetting it on any path produces phantom
+-- DPS drops when a caller compares a baseline from get_full_calcs (has
+-- ArmyCombinedDPS) against an after from calc_with* (lacks it).
+--
+-- See .claude/skills/minion-builds/SKILL.md for the full rationale.
+--
+-- Parameters:
+--   mainOutput — output table to mutate (must have .Minion sub-table, else noop)
+--   mainEnv — optional. If nil, falls back to build.calcsTab.mainEnv.
+--             The main skill's minion type does not change from node/gem/jewel
+--             overrides (same active skill, same minion) so the BASE mainEnv
+--             is safe to reuse for computing after-override outputs.
+function M._computeArmyDps(mainOutput, mainEnv)
+  if type(mainOutput) ~= "table" then return end
+  if type(mainOutput.Minion) ~= "table" then return end
+
+  mainEnv = mainEnv or (build and build.calcsTab and build.calcsTab.mainEnv)
+  if not mainEnv or not mainEnv.player or not mainEnv.player.mainSkill
+     or not mainEnv.player.mainSkill.minion then
+    return
+  end
+
+  local mData = mainEnv.player.mainSkill.minion.minionData
+  if not mData or not mData.limit then return end
+
+  local perMinionDps = mainOutput.Minion.CombinedDPS or mainOutput.Minion.TotalDPS or 0
+  if perMinionDps <= 0 then return end
+
+  local armyCount = mainOutput[mData.limit]
+  if type(armyCount) ~= "number" or armyCount < 1 then
+    armyCount = 1
+  end
+
+  mainOutput.Minion.ArmyCount = armyCount
+  mainOutput.Minion.ArmyCapKey = mData.limit
+  mainOutput.Minion.ArmyCombinedDPS = perMinionDps * armyCount
+end
+
 -- Export full calculation snapshot (all PoB calculation outputs)
 -- This provides access to all internal PoB calculations including EHP, per-skill DPS, etc.
 function M.get_full_calcs()
@@ -300,6 +346,11 @@ function M.get_full_calcs()
       mainOutput.FullDPS = mainOutput.CombinedDPS
     end
   end
+
+  -- Compute army DPS for minion builds. See M._computeArmyDps docstring for
+  -- the full rationale; this helper is also called from every calc_with*
+  -- variant so baselines and after-snapshots stay shape-consistent.
+  M._computeArmyDps(mainOutput, mainEnv)
 
   -- Surface per-hand accuracy to top-level so build-context.ts can read it.
   -- PoB calculates accuracy per weapon pass (MainHand/OffHand) in CalcOffence.lua,
@@ -986,9 +1037,21 @@ function M.calc_with(params)
   end
 
   -- Use deepCopySafe to strip circular references and non-serializable values
+  local outCopy = deepCopySafe(out)
+  local baseCopy = deepCopySafe(baseOut)
+
+  -- Populate army DPS on both before/after snapshots. The main skill's minion
+  -- type is invariant under node/mastery/condition overrides (same active
+  -- skill, same minion data) so build.calcsTab.mainEnv is the authoritative
+  -- source for minionData.limit. Without this, baselines captured via
+  -- get_full_calcs and afters captured via calc_with disagree by cap-multiple
+  -- and produce phantom DPS drops.
+  M._computeArmyDps(outCopy, build.calcsTab.mainEnv)
+  M._computeArmyDps(baseCopy, build.calcsTab.mainEnv)
+
   return {
-    output = deepCopySafe(out),
-    baseOutput = deepCopySafe(baseOut),
+    output = outCopy,
+    baseOutput = baseCopy,
     diagnostics = diagnostics,
   }
 end
@@ -1225,9 +1288,15 @@ function M.calc_with_gems(params)
     build.calcsTab:BuildOutput()
   end
 
+  -- Populate army DPS on both snapshots (see calc_with comment above).
+  local outCopy = deepCopySafe(out)
+  local baseCopy = deepCopySafe(baseOut)
+  M._computeArmyDps(outCopy, build.calcsTab.mainEnv)
+  M._computeArmyDps(baseCopy, build.calcsTab.mainEnv)
+
   return {
-    output = deepCopySafe(out),
-    baseOutput = deepCopySafe(baseOut),
+    output = outCopy,
+    baseOutput = baseCopy,
   }
 end
 
@@ -1271,6 +1340,9 @@ function M.calc_with_jewel(params)
   -- 1. Capture beforeOutput
   build.calcsTab:BuildOutput()
   local beforeOutput = deepCopySafe(build.calcsTab.mainOutput)
+  -- Populate army DPS so the caller can compute minion deltas consistently
+  -- against get_full_calcs-produced baselines.
+  M._computeArmyDps(beforeOutput, build.calcsTab.mainEnv)
 
   -- 2. Snapshot all mutable state for restoration
   local savedJewels = {}
@@ -1574,6 +1646,9 @@ function M.calc_with_jewel(params)
 
     -- 4g. Capture afterOutput
     local afterOutput = deepCopySafe(build.calcsTab.mainOutput)
+    -- Populate army DPS on the after snapshot to keep minion deltas
+    -- consistent across get_full_calcs / calc_with* paths.
+    M._computeArmyDps(afterOutput, build.calcsTab.mainEnv)
 
     -- Diagnostic: log before/after CombinedDPS to verify jewel impact
     local bDPS = beforeOutput and beforeOutput.CombinedDPS or 0
@@ -1717,6 +1792,7 @@ function M.calc_with_cluster_chain(params)
   -- 1. Capture beforeOutput
   build.calcsTab:BuildOutput()
   local beforeOutput = deepCopySafe(build.calcsTab.mainOutput)
+  M._computeArmyDps(beforeOutput, build.calcsTab.mainEnv)
 
   -- 2. Snapshot ALL mutable state
   local savedJewels = {}
@@ -2119,6 +2195,7 @@ function M.calc_with_cluster_chain(params)
 
     -- 4h. Capture afterOutput
     local afterOutput = deepCopySafe(build.calcsTab.mainOutput)
+    M._computeArmyDps(afterOutput, build.calcsTab.mainEnv)
 
     -- Diagnostic log
     local bDPS = beforeOutput and beforeOutput.CombinedDPS or 0
@@ -3352,6 +3429,129 @@ function M.set_gem_enabled(params)
     gemName = gemInstance.nameSpec,
     enabled = gemInstance.enabled,
   }
+end
+
+-- Configure minion-build defaults that aren't exposed via GGG / poe.ninja APIs.
+-- Ladder-sourced builds with Raise Spectre have an empty spectreList because spectre
+-- selection is runtime game state (not persisted on the character). Without this,
+-- PoB can't compute minion DPS and the "best skill" fallback picks whatever utility
+-- skill the player also has (Flame Dash, Shield Charge), producing meaningless deltas.
+--
+-- This handler:
+--   1. Sets build.spectreList to a default meta pool (array of metadata IDs). PoB's
+--      index-1 default means the first entry becomes the active spectre for all
+--      Raise Spectre skills that don't already have a skillMinion set.
+--   2. Optionally enables includeInFullDPS on socket groups containing minion skills,
+--      so mainOutput.FullDPS aggregates minion damage.
+--
+-- params: {
+--   spectreList: string[]  -- full metadata paths, validated against data.minions
+--   enableFullDpsOnMinionSkills: boolean  -- default true
+-- }
+function M.set_minion_config(params)
+  if not build then return nil, 'build not initialized' end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+
+  local appliedSpectres = {}
+  local invalidSpectres = {}
+
+  if params.spectreList and type(params.spectreList) == 'table' then
+    wipeTable(build.spectreList)
+    for _, id in ipairs(params.spectreList) do
+      if type(id) == 'string' and build.data and build.data.minions and build.data.minions[id] then
+        t_insert(build.spectreList, id)
+        t_insert(appliedSpectres, id)
+      else
+        t_insert(invalidSpectres, tostring(id))
+      end
+    end
+  end
+
+  local minionGroupsEnabled = {}
+  local enableFullDps = params.enableFullDpsOnMinionSkills
+  if enableFullDps == nil then enableFullDps = true end
+
+  if enableFullDps and build.skillsTab then
+    local skillSetId = build.skillsTab.activeSkillSetId or 1
+    local skillSet = build.skillsTab.skillSets and build.skillsTab.skillSets[skillSetId]
+    local groups = (skillSet and skillSet.socketGroupList) or build.skillsTab.socketGroupList or {}
+
+    -- When the same minion skill appears in multiple groups (e.g. Raise
+    -- Spectre in both body armour 6L and The Dark Monarch helmet 4L), PoB's
+    -- FullDPS aggregator runs calcs.perform for EACH group marked
+    -- includeInFullDPS and sums per-minion × activeSkillCount into the total.
+    -- The player can only cast ONE Raise Spectre at a time, so enabling both
+    -- groups double-counts minion damage. Pick the highest-gem-count group
+    -- per skill name and enable only that one.
+    local bestByName = {}  -- minionSkillName -> { idx, gemCount }
+    for idx, sg in ipairs(groups) do
+      if sg.enabled and sg.gemList then
+        local minionSkillName = nil
+        for _, gem in ipairs(sg.gemList) do
+          local name = gem.nameSpec or ''
+          if name:match('Raise Spectre') or name:match('Raise Zombie')
+            or name:match('^Summon ') or name:match('Summon Skelet')
+            or name:match('Animate Guardian') or name:match('Animate Weapon')
+            or name:match('Dominating Blow') or name:match('Absolution')
+            or name:match('Herald of Purity') then
+            minionSkillName = name
+            break
+          end
+        end
+        if minionSkillName then
+          local gemCount = 0
+          for _, g in ipairs(sg.gemList) do
+            if g.enabled ~= false then gemCount = gemCount + 1 end
+          end
+          local prev = bestByName[minionSkillName]
+          if not prev or gemCount > prev.gemCount then
+            bestByName[minionSkillName] = { idx = idx, gemCount = gemCount, group = sg }
+          end
+        end
+      end
+    end
+
+    for skillName, info in pairs(bestByName) do
+      if not info.group.includeInFullDPS then
+        info.group.includeInFullDPS = true
+        if build.skillsTab.ProcessSocketGroup then
+          build.skillsTab:ProcessSocketGroup(info.group)
+        end
+        t_insert(minionGroupsEnabled, { index = info.idx, skill = skillName })
+      end
+    end
+  end
+
+  build.buildFlag = true
+  M.get_main_output()
+
+  return {
+    spectresApplied = appliedSpectres,
+    spectresInvalid = invalidSpectres,
+    minionGroupsEnabled = minionGroupsEnabled,
+  }
+end
+
+-- Read the current minion config from the loaded build. Returns
+-- { spectreList = string[] } containing the full metadata paths of whatever
+-- spectres are currently configured (empty when unset — the normal case for
+-- ladder-sourced builds because spectres are runtime state).
+--
+-- Used by the TypeScript minion-config/applyMinionDefaults() to detect
+-- whether the upstream PoB XML already has a populated spectreList (player
+-- exported after configuring spectres). When non-empty, we respect the
+-- player's choice instead of overriding with inferred defaults.
+function M.get_minion_config()
+  if not build then return nil, 'build not initialized' end
+  local spectreList = {}
+  if build.spectreList then
+    for _, id in ipairs(build.spectreList) do
+      if type(id) == 'string' then
+        t_insert(spectreList, id)
+      end
+    end
+  end
+  return { spectreList = spectreList }
 end
 
 -- Remove a socket group

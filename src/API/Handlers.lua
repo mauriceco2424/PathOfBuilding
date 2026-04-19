@@ -349,6 +349,18 @@ handlers.set_gem_enabled = function(params)
   return { ok = true, gem = res }
 end
 
+handlers.set_minion_config = function(params)
+  local res, err = BuildOps.set_minion_config(params or {})
+  if not res then return { ok = false, error = err or 'failed to set minion config' } end
+  return { ok = true, data = res }
+end
+
+handlers.get_minion_config = function(_params)
+  local res, err = BuildOps.get_minion_config()
+  if not res then return { ok = false, error = err or 'failed to get minion config' } end
+  return { ok = true, data = res }
+end
+
 handlers.remove_gem = function(params)
   local ok2, err = BuildOps.remove_gem(params or {})
   if not ok2 then return { ok = false, error = err or 'failed to remove gem' } end

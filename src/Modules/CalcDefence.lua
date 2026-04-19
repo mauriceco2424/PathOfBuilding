@@ -1568,11 +1568,18 @@ function calcs.defence(env, actor)
 	end
 
 	for _, ailment in ipairs(data.nonElementalAilmentTypeList) do
-		output[ailment.."AvoidChance"] = modDB:Flag(nil, ailment.."Immune") and 100 or m_floor(m_min(modDB:Sum("BASE", nil, "Avoid"..ailment, "AvoidAilments"), 100))
+		local rawSum = modDB:Sum("BASE", nil, "Avoid"..ailment, "AvoidAilments")
+		output[ailment.."AvoidChance"] = modDB:Flag(nil, ailment.."Immune") and 100 or m_floor(m_min(rawSum, 100))
+		-- Raw pre-cap source sum (see CalcDefence.lua history 2026-04-19): path-of-agent reports
+		-- significantExtras deltas using *Total fields so swaps that burn overcap headroom show
+		-- the real avoidance loss rather than the smaller capped-display delta.
+		output[ailment.."AvoidChanceTotal"] = modDB:Flag(nil, ailment.."Immune") and 100 or rawSum
 	end
 	for _, ailment in ipairs(data.elementalAilmentTypeList) do
 		local shockAvoidAppliesToAll = modDB:Flag(nil, "ShockAvoidAppliesToElementalAilments") and ailment ~= "Shock"
-		output[ailment.."AvoidChance"] = modDB:Flag(nil, ailment.."Immune", "ElementalAilmentImmune") and 100 or m_floor(m_min(modDB:Sum("BASE", nil, "Avoid"..ailment, "AvoidAilments", "AvoidElementalAilments") + (shockAvoidAppliesToAll and modDB:Sum("BASE", nil, "AvoidShock") or 0), 100))
+		local rawSum = modDB:Sum("BASE", nil, "Avoid"..ailment, "AvoidAilments", "AvoidElementalAilments") + (shockAvoidAppliesToAll and modDB:Sum("BASE", nil, "AvoidShock") or 0)
+		output[ailment.."AvoidChance"] = modDB:Flag(nil, ailment.."Immune", "ElementalAilmentImmune") and 100 or m_floor(m_min(rawSum, 100))
+		output[ailment.."AvoidChanceTotal"] = modDB:Flag(nil, ailment.."Immune", "ElementalAilmentImmune") and 100 or rawSum
 	end
 
 	output.CurseAvoidChance = modDB:Flag(nil, "CurseImmune") and 100 or m_min(modDB:Sum("BASE", nil, "AvoidCurse"), 100)
@@ -2123,11 +2130,15 @@ function calcs.buildDefenceEstimations(env, actor)
 		local StunThresholdMod = (1 + modDB:Sum("INC", nil, "StunThreshold") / 100)
 		output.StunThreshold = stunThresholdBase * StunThresholdMod
 		
-		local notAvoidChance = modDB:Flag(nil, "StunImmune") and 0 or 100 - m_min(modDB:Sum("BASE", nil, "AvoidStun"), 100)
+		local stunAvoidSum = modDB:Sum("BASE", nil, "AvoidStun")
+		local notAvoidChance = modDB:Flag(nil, "StunImmune") and 0 or 100 - m_min(stunAvoidSum, 100)
 		if output.EnergyShield > output["totalTakenHit"] and not env.modDB:Flag(nil, "EnergyShieldProtectsMana") then
 			notAvoidChance = notAvoidChance * 0.5
 		end
 		output.StunAvoidChance = 100 - notAvoidChance
+		-- Raw pre-cap source sum — see nonElementalAilmentTypeList loop above for rationale.
+		-- Note: does not fold in the ES 50% stun-avoid bonus; Total tracks sourced AvoidStun only.
+		output.StunAvoidChanceTotal = modDB:Flag(nil, "StunImmune") and 100 or stunAvoidSum
 		
 		if breakdown then
 			breakdown.StunThreshold = { s_format("%d ^8(base from %s)", stunThresholdBase, stunThresholdSource) }
