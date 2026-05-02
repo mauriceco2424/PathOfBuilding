@@ -54,6 +54,9 @@ end
 function GetScreenScale()
 	return 1
 end
+function GetVirtualScreenSize()
+	return GetScreenSize()
+end
 function GetDPIScaleOverridePercent()
 	return 1
 end
