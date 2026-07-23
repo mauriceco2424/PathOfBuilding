@@ -786,6 +786,147 @@ function M.set_level(level)
   return true
 end
 
+-- List the progression loadouts embedded in the build: tree specs, skill sets
+-- and item sets. Leveling guides ship several ("Level 30", "Level 60",
+-- "Endgame"); PoB's UI switches between them and so do we.
+function M.list_loadouts()
+  if not build or not build.treeTab then
+    return nil, 'build/treeTab not initialized'
+  end
+
+  local specs = {}
+  local activeSpecIndex = build.treeTab.activeSpec or 1
+  for index, spec in ipairs(build.treeTab.specList or {}) do
+    local allocated = 0
+    for _ in pairs(spec.allocNodes or {}) do allocated = allocated + 1 end
+    t_insert(specs, {
+      index = index,
+      title = spec.title or 'Default',
+      treeVersion = spec.treeVersion,
+      allocatedNodes = allocated,
+      active = index == activeSpecIndex,
+    })
+  end
+
+  local skillSets = {}
+  local activeSkillSetId = build.skillsTab and build.skillsTab.activeSkillSetId or 1
+  if build.skillsTab then
+    for _, setId in ipairs(build.skillsTab.skillSetOrderList or {}) do
+      local set = build.skillsTab.skillSets and build.skillsTab.skillSets[setId]
+      if set then
+        t_insert(skillSets, {
+          id = setId,
+          title = set.title or ('Set ' .. tostring(setId)),
+          active = setId == activeSkillSetId,
+        })
+      end
+    end
+  end
+
+  local itemSets = {}
+  local activeItemSetId = build.itemsTab and build.itemsTab.activeItemSetId or 1
+  if build.itemsTab then
+    for _, setId in ipairs(build.itemsTab.itemSetOrderList or {}) do
+      local set = build.itemsTab.itemSets and build.itemsTab.itemSets[setId]
+      if set then
+        t_insert(itemSets, {
+          id = setId,
+          title = set.title or ('Set ' .. tostring(setId)),
+          active = setId == activeItemSetId,
+        })
+      end
+    end
+  end
+
+  return {
+    characterLevel = build.characterLevel,
+    activeSpecIndex = activeSpecIndex,
+    activeSkillSetId = activeSkillSetId,
+    activeItemSetId = activeItemSetId,
+    specs = specs,
+    skillSets = skillSets,
+    itemSets = itemSets,
+  }
+end
+
+-- Switch the active progression loadout (tree spec / skill set / item set).
+-- Validates every id BEFORE mutating: PoB's own setters clamp (SetActiveSpec)
+-- or silently fall back to the first set (SetActiveSkillSet), which would
+-- apply the WRONG bracket without any error.
+function M.set_active_loadout(params)
+  if not build or not build.treeTab then
+    return nil, 'build/treeTab not initialized'
+  end
+  if type(params) ~= 'table' then return nil, 'invalid params' end
+
+  local specIndex = params.specIndex ~= nil and tonumber(params.specIndex) or nil
+  local skillSetId = params.skillSetId ~= nil and tonumber(params.skillSetId) or nil
+  local itemSetId = params.itemSetId ~= nil and tonumber(params.itemSetId) or nil
+
+  if not specIndex and not skillSetId and not itemSetId then
+    return nil, 'no loadout selection provided (specIndex, skillSetId or itemSetId)'
+  end
+
+  local specList = build.treeTab.specList or {}
+  if specIndex and not specList[specIndex] then
+    return nil, string.format('spec index %d not found (build has %d specs)', specIndex, #specList)
+  end
+  if skillSetId then
+    local sets = build.skillsTab and build.skillsTab.skillSets
+    if not sets or not sets[skillSetId] then
+      return nil, string.format('skill set %d not found', skillSetId)
+    end
+  end
+  if itemSetId then
+    local sets = build.itemsTab and build.itemsTab.itemSets
+    if not sets or not sets[itemSetId] then
+      return nil, string.format('item set %d not found', itemSetId)
+    end
+  end
+
+  -- Apply in PoB's own loadout order (Build.lua buildLoadouts callback):
+  -- spec -> item set -> skill set, each only when it actually changes.
+  local ok, err = pcall(function()
+    if specIndex and specIndex ~= build.treeTab.activeSpec then
+      build.treeTab:SetActiveSpec(specIndex)
+    end
+    if itemSetId and build.itemsTab and itemSetId ~= build.itemsTab.activeItemSetId then
+      build.itemsTab:SetActiveItemSet(itemSetId)
+    end
+    if skillSetId and build.skillsTab and skillSetId ~= build.skillsTab.activeSkillSetId then
+      build.skillsTab:SetActiveSkillSet(skillSetId)
+    end
+  end)
+  if not ok then
+    return nil, 'loadout switch failed: ' .. tostring(err)
+  end
+
+  -- SetActiveSpec does NOT build cluster jewel subgraphs (it only swaps
+  -- build.spec and re-sockets jewels). Without this, a switched-to spec with
+  -- cluster jewels calculates without its cluster nodes -- silently wrong stats.
+  pcall(function()
+    if build.spec and build.spec.BuildClusterJewelGraphs then
+      build.spec:BuildClusterJewelGraphs()
+    end
+    if build.itemsTab then
+      build.itemsTab:UpdateSockets()
+      build.itemsTab:PopulateSlots()
+    end
+  end)
+
+  build.buildFlag = true
+  local output, outErr = M.get_main_output()
+  if not output then
+    return nil, outErr or 'failed to rebuild output after loadout switch'
+  end
+
+  return {
+    activeSpecIndex = build.treeTab.activeSpec,
+    activeSkillSetId = build.skillsTab and build.skillsTab.activeSkillSetId or 1,
+    activeItemSetId = build.itemsTab and build.itemsTab.activeItemSetId or 1,
+  }
+end
+
 -- Basic build info
 function M.get_build_info()
   if not build then return nil, 'build not initialized' end

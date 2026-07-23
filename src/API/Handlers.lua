@@ -243,6 +243,18 @@ handlers.get_build_info = function(params)
   return { ok = true, info = info }
 end
 
+handlers.list_loadouts = function(_params)
+  local res, err = BuildOps.list_loadouts()
+  if not res then return { ok = false, error = err or 'failed to list loadouts' } end
+  return { ok = true, loadouts = res }
+end
+
+handlers.set_active_loadout = function(params)
+  local res, err = BuildOps.set_active_loadout(params or {})
+  if not res then return { ok = false, error = err or 'failed to set active loadout' } end
+  return { ok = true, result = res }
+end
+
 handlers.update_tree_delta = function(params)
   local ok2, err = BuildOps.update_tree_delta(params or {})
   if not ok2 then return { ok = false, error = err } end
