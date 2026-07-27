@@ -767,7 +767,12 @@ function ImportTabClass:ImportPassiveTreeAndJewels(json, charData)
 	self.build.spec:BuildClusterJewelGraphs()
 	self.build.spec:AddUndoState()
 	if not self.lastLeague then
-		self.lastLeague = charSelectLeague:GetSelValueByKey("league")
+		-- charSelectLeague is a GUI global assigned in DownloadCharacterList; it never exists headless
+		if charSelectLeague then
+			self.lastLeague = charSelectLeague:GetSelValueByKey("league")
+		elseif charData and charData.league then
+			self.lastLeague = charData.league
+		end
 	end
 	self.build.characterLevel = charData.level
 	self.build.characterLevelAutoMode = false
