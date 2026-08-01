@@ -759,9 +759,25 @@ function M.set_tree(params)
 end
 
 -- Export full build XML
+-- Returns the build serialized to XML.
+--
+-- GUARD: never hand out a "corpse" export. buildMode:SaveDB writes the <Build>
+-- section unconditionally but wraps every tab section in `if self.savers then`
+-- (Modules/Build.lua). buildMode:Init assigns self.savers only at the very END
+-- of a successful load, while SetMode's Shutdown() nils it at the START -- so a
+-- build that failed to load (malformed/truncated XML) serializes to a
+-- <Build>+<PlayerStat> skeleton with NO Items/Skills/Tree/Config and no error
+-- anywhere. Reloading that skeleton yields a structurally complete but NAKED
+-- character (DPS 0, Life 60), which is what produced the P6/P7 "naked baseline",
+-- gem_not_found on gems the build has, and absurd percentage deltas.
+-- Fail loudly instead: callers already handle an export error by falling back
+-- or aborting, and none of them want a corpse persisted.
 function M.export_build_xml()
   if not build or not build.SaveDB then
     return nil, 'build not initialized'
+  end
+  if not build.savers or next(build.savers) == nil then
+    return nil, 'build savers missing - build did not finish initializing (failed/malformed load); refusing to export a section-less build'
   end
   local xml = build:SaveDB('api-export')
   if not xml then return nil, 'failed to compose xml' end
@@ -1254,12 +1270,36 @@ function M.calc_with_gems(params)
   -- 3. Apply gem modifications to LIVE state
   local modified = false
 
-  -- Handle removeGems (do first to handle indices correctly)
-  -- NOTE: Removals are NOT supported in what-if mode as they would break restoration.
-  -- For now, skip removals and log a warning.
-  if params and type(params.removeGems) == 'table' and #params.removeGems > 0 then
-    -- Removals complicate restoration - skip for now
-    -- TODO: Implement if needed
+  -- Every requested operation that could NOT be applied is collected here. A
+  -- what-if that silently applies nothing returns baseline as both before and
+  -- after, i.e. a perfect 0.00% delta that reads like a real measurement. That
+  -- is how the removeGems stub below went unnoticed for weeks and made every
+  -- skill-setup test report 0%. Unapplied ops are now a hard error.
+  local opFailures = {}
+
+  -- Handle removeGems.
+  --
+  -- Implemented as DISABLE, not table.remove. A disabled gem contributes nothing
+  -- to the calculation (ProcessSocketGroup skips it) while leaving the gemList
+  -- structure intact, so the index-based restore in step 5 puts it back exactly
+  -- -- `enabled` is already saved in originalState. Structurally removing an
+  -- entry would shift every later index and corrupt that restore, which is why
+  -- this branch used to be an empty "TODO: implement if needed" stub that
+  -- accepted the parameter and did nothing.
+  if params and type(params.removeGems) == 'table' then
+    for _, rem in ipairs(params.removeGems) do
+      local group = socketGroupList[rem.groupIndex]
+      if not group or not group.gemList then
+        t_insert(opFailures, string.format("removeGems: groupIndex %s not found (%d groups)",
+          tostring(rem.groupIndex), #socketGroupList))
+      elseif not group.gemList[rem.gemIndex] then
+        t_insert(opFailures, string.format("removeGems: gemIndex %s not found in group %s (%d gems)",
+          tostring(rem.gemIndex), tostring(rem.groupIndex), #group.gemList))
+      else
+        group.gemList[rem.gemIndex].enabled = false
+        modified = true
+      end
+    end
   end
 
   -- Helper to find gem data by name OR skillId
@@ -1311,13 +1351,13 @@ function M.calc_with_gems(params)
     for _, replace in ipairs(params.replaceGems) do
       local group = socketGroupList[replace.groupIndex]
       if not group then
-        ConPrintf("[calc_with_gems] WARNING: groupIndex %s not found (socketGroupList has %d groups)", tostring(replace.groupIndex), #socketGroupList)
+        t_insert(opFailures, string.format("replaceGems: groupIndex %s not found (%d groups)", tostring(replace.groupIndex), #socketGroupList))
       elseif not group.gemList then
-        ConPrintf("[calc_with_gems] WARNING: group %d has no gemList", replace.groupIndex)
+        t_insert(opFailures, string.format("replaceGems: group %s has no gemList", tostring(replace.groupIndex)))
       elseif not group.gemList[replace.gemIndex] then
-        ConPrintf("[calc_with_gems] WARNING: gemIndex %s not found in group %d (gemList has %d gems)", tostring(replace.gemIndex), replace.groupIndex, #group.gemList)
+        t_insert(opFailures, string.format("replaceGems: gemIndex %s not found in group %s (%d gems)", tostring(replace.gemIndex), tostring(replace.groupIndex), #group.gemList))
       elseif not replace.gem then
-        ConPrintf("[calc_with_gems] WARNING: replace entry has no gem spec")
+        t_insert(opFailures, "replaceGems: entry has no gem spec")
       else
         local gemData = findGemByNameOrId(replace.gem.skillId)
         if gemData then
@@ -1331,7 +1371,10 @@ function M.calc_with_gems(params)
           gemInstance.qualityId = replace.gem.qualityId or "Default"
           modified = true
         else
-          ConPrintf("[calc_with_gems] WARNING: gem '%s' not found in gem database", tostring(replace.gem.skillId))
+          -- Unresolvable name => nothing applied => a 0.00% delta that looks
+          -- measured. See pob-lua-patterns section 12 (PoB stores support gems
+          -- without the " Support" suffix; findGemByNameOrId tries both forms).
+          t_insert(opFailures, string.format("replaceGems: gem '%s' not found in the PoB gem database", tostring(replace.gem.skillId)))
         end
       end
     end
@@ -1341,8 +1384,15 @@ function M.calc_with_gems(params)
   if params and type(params.addGems) == 'table' then
     for _, addition in ipairs(params.addGems) do
       local group = socketGroupList[addition.groupIndex]
-      if group and addition.gem then
+      if not group then
+        t_insert(opFailures, string.format("addGems: groupIndex %s not found (%d groups)", tostring(addition.groupIndex), #socketGroupList))
+      elseif not addition.gem then
+        t_insert(opFailures, "addGems: entry has no gem spec")
+      else
         local gemData = findGemByNameOrId(addition.gem.skillId)
+        if not gemData then
+          t_insert(opFailures, string.format("addGems: gem '%s' not found in the PoB gem database", tostring(addition.gem.skillId)))
+        end
         if gemData then
           if not group.gemList then group.gemList = {} end
           table.insert(group.gemList, {
@@ -1427,6 +1477,14 @@ function M.calc_with_gems(params)
     end
     -- Rebuild output to fully restore pre-modification state
     build.calcsTab:BuildOutput()
+  end
+
+  -- 6b. Fail loudly if any requested operation could not be applied.
+  -- Deliberately AFTER the restore above, so an erroring call still leaves the
+  -- build exactly as it found it. Returning a result here would hand the caller
+  -- a 0.00% delta that is indistinguishable from "this change does nothing".
+  if #opFailures > 0 then
+    return nil, "calc_with_gems could not apply " .. #opFailures .. " requested operation(s): " .. table.concat(opFailures, "; ")
   end
 
   -- Populate army DPS on both snapshots (see calc_with comment above).

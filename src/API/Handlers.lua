@@ -128,10 +128,20 @@ handlers.load_build_xml = function(params)
     end
   end
 
-  -- Check for failure conditions
+  -- Check for failure conditions.
+  -- PoB reports XML parse errors on stderr only and leaves a half-initialized
+  -- build behind: buildMode:Init early-returns before assigning self.savers,
+  -- which SetMode's Shutdown() has already nilled. Answering ok=true there is
+  -- the lie that let malformed XML propagate as a "naked character" through
+  -- every downstream export/restore. Detect it and fail the call instead.
   local build = _G.build
   if not build then
     io.stderr:write("[load_build_xml] ERROR: build object is nil after load\n")
+    return { ok = false, error = 'build object is nil after load' }
+  end
+  if not build.savers or next(build.savers) == nil then
+    io.stderr:write("[load_build_xml] ERROR: build did not initialize (savers missing) - XML malformed or truncated\n")
+    return { ok = false, error = 'build failed to initialize from XML (malformed or truncated build XML)' }
   end
 
   return { ok = true, build_id = 1 }
