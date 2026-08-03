@@ -6,6 +6,7 @@
 local scriptDir = arg[0]:match("(.*[/\\])")  or "./"
 local LibDeflate = dofile(scriptDir .. "LibDeflate.lua")
 
+
 -- Callbacks
 local callbackTable = { }
 local mainObject
@@ -326,13 +327,38 @@ if os.getenv('POB_API_STDIO') == '1' or has_flag('--stdio') then
       io.stderr:write(string.format("[loadBuildFromXML] ERROR: %s\n", tostring(mainObject.promptMsg)))
     end
   end
+  -- Upstream v2.66 reshaped both import entry points: ImportTabClass:ProcessJSON is
+  -- gone and each now takes ONE already-decoded charData table instead of a raw JSON
+  -- string. charData is the get-items `character` object with the payloads folded in:
+  --   .equipment = get-items .items      .guardian = get-items .guardian
+  --   .passives  = get-passive-skills    .jewels   = get-passive-skills .items
+  -- The boolean args mirror PoB's own import-checkbox defaults (delete equipment /
+  -- skills / jewels on, ignore weapon swap off), so headless matches the GUI import.
+  local function decodePayload(value)
+    if type(value) == "table" then return value end
+    if type(value) ~= "string" then return {} end
+    local dkjson = require "dkjson"
+    return dkjson.decode(value) or {}
+  end
   function loadBuildFromJSON(getItemsJSON, getPassiveSkillsJSON)
     mainObject.main:SetMode("BUILD", false, "")
     runCallback("OnFrame")
     local build = mainObject.main.modes["BUILD"]
     _G.build = build
-    local charData = build.importTab:ImportItemsAndSkills(getItemsJSON)
-    build.importTab:ImportPassiveTreeAndJewels(getPassiveSkillsJSON, charData)
+    local itemsData = decodePayload(getItemsJSON)
+    local passiveData = decodePayload(getPassiveSkillsJSON)
+    local charData = {}
+    for key, value in pairs(itemsData.character or {}) do
+      charData[key] = value
+    end
+    charData.equipment = itemsData.items or {}
+    charData.guardian = itemsData.guardian
+    charData.passives = passiveData
+    charData.jewels = passiveData.items or {}
+    -- ImportPassiveTreeAndJewels calls charData.league:match(...) unguarded.
+    charData.league = charData.league or "Standard"
+    build.importTab:ImportItemsAndSkills(charData, true, true, false)
+    build.importTab:ImportPassiveTreeAndJewels(charData, true)
     runCallback("OnFrame")
     runCallback("OnFrame")
   end
@@ -390,14 +416,15 @@ function loadBuildFromXML(xmlText, name)
 	mainObject.main:SetMode("BUILD", false, name or "", xmlText)
 	runCallback("OnFrame")
 end
-function loadBuildFromJSON(getItemsJSON, getPassiveSkillsJSON)
+function loadBuildFromJSON(characterJSON)
 	mainObject.main:SetMode("BUILD", false, "")
 	runCallback("OnFrame")
-	build = mainObject.main.modes["BUILD"]
-	local charData = build.importTab:ImportItemsAndSkills(getItemsJSON)
-	build.importTab:ImportPassiveTreeAndJewels(getPassiveSkillsJSON, charData)
-	runCallback("OnFrame")
-	runCallback("OnFrame")
+	-- characterJSON could, for example, be the response from the PoE API:
+	-- https://www.pathofexile.com/developer/docs/reference#characters-get
+	local dkjson = require "dkjson"
+	local input = dkjson.decode(characterJSON)
+	local charData = build.importTab:ImportItemsAndSkills(input)
+	build.importTab:ImportPassiveTreeAndJewels(input)
 	-- You now have a build without a correct main skill selected, or any configuration options set
 	-- Good luck!
 end

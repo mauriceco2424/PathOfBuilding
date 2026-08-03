@@ -202,7 +202,9 @@ function PassiveSpecClass:Load(xml, dbFileName)
 				end
 			end
 		end
-		self:ImportFromNodeList(tonumber(classId), tonumber(ascendClassId), tonumber(xml.attrib.secondaryAscendClassId or 0), hashList, self.hashOverrides, masteryEffects)
+		-- classId/ascendClassId are the resolved locals above (theorycraft template fallback),
+		-- not the raw xml attribs; className stays nil so ImportFromNodeList uses the ids.
+		self:ImportFromNodeList(nil, tonumber(classId), tonumber(ascendClassId), tonumber(xml.attrib.secondaryAscendClassId or 0), hashList, self.hashOverrides, masteryEffects)
 	elseif url then
 		self:DecodeURL(url)
 	end
@@ -268,13 +270,20 @@ function PassiveSpecClass:PostLoad()
 end
 
 -- Import passive spec from the provided class IDs and node hash list
-function PassiveSpecClass:ImportFromNodeList(classId, ascendClassId, secondaryAscendClassId, hashList, hashOverrides, masteryEffects, treeVersion)
+function PassiveSpecClass:ImportFromNodeList(className, classId, ascendClassId, secondaryAscendClassId, hashList, hashOverrides, masteryEffects, treeVersion)
   if hashOverrides == nil then hashOverrides = {} end
 	if treeVersion and treeVersion ~= self.treeVersion then
 		self:Init(treeVersion)
 		self.build.treeTab.showConvert = self.treeVersion ~= latestTreeVersion
 	end
 	self:ResetNodes()
+	if className then
+		classId = self.tree.classNameMap[className] or
+		(self.tree.ascendNameMap[className] and self.tree.ascendNameMap[className].classId) or
+		(self.tree.internalAscendNameMap[className] and self.tree.internalAscendNameMap[className].classId)
+		ascendClassId = (self.tree.ascendNameMap[className] and self.tree.ascendNameMap[className].ascendClassId) or
+		(self.tree.internalAscendNameMap[className] and self.tree.internalAscendNameMap[className].ascendClassId) or 0
+	end
 	self:SelectClass(classId)
 	self:SelectAscendClass(ascendClassId)
 	self:SelectSecondaryAscendClass(secondaryAscendClassId)
@@ -1190,6 +1199,16 @@ function PassiveSpecClass:BuildAllDependsAndPaths()
 				jewelType = 4
 			elseif conqueredBy.conqueror.type == "kalguur" then
 				jewelType = 6
+			elseif conqueredBy.conqueror.type == "abyssTecrod" then
+				jewelType = 7
+			elseif conqueredBy.conqueror.type == "abyssUlaman" then
+				jewelType = 8
+			elseif conqueredBy.conqueror.type == "abyssKurgal" then
+				jewelType = 9
+			elseif conqueredBy.conqueror.type == "abyssAmanamu" then
+				jewelType = 10
+			elseif conqueredBy.conqueror.type == "abyssZorath" then
+				jewelType = 11
 			end
 			local seed = conqueredBy.id
 			if jewelType == 5 then
@@ -1956,7 +1975,7 @@ function PassiveSpecClass:BuildSubgraph(jewel, parentSocket, id, upSize, importe
 				if proxyGroup == data.group then
 					if node.oidx == data.orbitIndex and not data.isMastery then
 						for _, extendedId in ipairs(importedGroups[proxyGroup].nodes) do
-							if id == tonumber(extendedId) and inExtendedHashes(id) then
+							if id == extendedId and inExtendedHashes(tonumber(id)) then
 								return true
 							end
 						end
@@ -2282,7 +2301,7 @@ function PassiveSpecClass:CreateUndoState()
 end
 
 function PassiveSpecClass:RestoreUndoState(state, treeVersion)
-	self:ImportFromNodeList(state.classId, state.ascendClassId, state.secondaryAscendClassId, state.hashList, state.hashOverrides, state.masteryEffects, treeVersion or state.treeVersion)
+	self:ImportFromNodeList(nil, state.classId, state.ascendClassId, state.secondaryAscendClassId, state.hashList, state.hashOverrides, state.masteryEffects, treeVersion or state.treeVersion)
 	self:SetWindowTitleWithBuildClass()
 end
 

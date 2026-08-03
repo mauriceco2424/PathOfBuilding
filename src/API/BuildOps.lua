@@ -752,7 +752,8 @@ function M.set_tree(params)
   local mastery = params.masteryEffects or {}
   local treeVersion = params.treeVersion
   -- Import (resets nodes internally and rebuilds)
-  build.spec:ImportFromNodeList(classId, ascendId, secondaryId, nodes, {}, mastery, treeVersion)
+  -- leading nil = className (added upstream v2.66.x); we always pass numeric ids
+  build.spec:ImportFromNodeList(nil, classId, ascendId, secondaryId, nodes, {}, mastery, treeVersion)
   -- Rebuild calcs to reflect changes
   M.get_main_output()
   return true
@@ -980,7 +981,7 @@ function M.update_tree_delta(params)
   local ascendId = params.ascendClassId or current.ascendClassId or 0
   local secId = params.secondaryAscendClassId or current.secondaryAscendClassId or 0
   local tv = params.treeVersion or current.treeVersion
-  build.spec:ImportFromNodeList(tonumber(classId) or 0, tonumber(ascendId) or 0, tonumber(secId) or 0, nodes, {}, mastery, tv)
+  build.spec:ImportFromNodeList(nil, tonumber(classId) or 0, tonumber(ascendId) or 0, tonumber(secId) or 0, nodes, {}, mastery, tv)
   M.get_main_output()
   return true
 end
@@ -1691,6 +1692,7 @@ function M.calc_with_jewel(params)
       for id, _ in pairs(newNodeSet) do t_insert(newNodes, id) end
       table.sort(newNodes)
       spec:ImportFromNodeList(
+        nil,
         current.classId or 0,
         current.ascendClassId or 0,
         current.secondaryAscendClassId or 0,
@@ -2153,6 +2155,7 @@ function M.calc_with_cluster_chain(params)
       for id, _ in pairs(newNodeSet) do t_insert(newNodes, id) end
       table.sort(newNodes)
       spec:ImportFromNodeList(
+        nil,
         current.classId or 0,
         current.ascendClassId or 0,
         current.secondaryAscendClassId or 0,
@@ -4760,6 +4763,7 @@ function M.set_jewel(params)
     table.sort(newNodes)
 
     spec:ImportFromNodeList(
+      nil,
       current.classId or 0,
       current.ascendClassId or 0,
       current.secondaryAscendClassId or 0,
@@ -5001,6 +5005,7 @@ function M.set_cluster_chain(params)
     for id, _ in pairs(newNodeSet) do table.insert(newNodes, id) end
     table.sort(newNodes)
     spec:ImportFromNodeList(
+      nil,
       current.classId or 0,
       current.ascendClassId or 0,
       current.secondaryAscendClassId or 0,
